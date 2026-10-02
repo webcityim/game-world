@@ -201,7 +201,7 @@ async function main() {
   capital.addCollider(0, 0, 4.6, 4.6, 0, 1.0);
 
   // ------------------------------------------------------------ 行星与奇观
-  const planet = new Planet(terrain);
+  const planet = new Planet(terrain, params.has("veg") ? Number(params.get("veg")) : 1);
   scene.add(planet.group);
 
   const wonderAnchors = wonders.map((w, i) => {

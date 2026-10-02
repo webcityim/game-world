@@ -144,7 +144,7 @@ export class Terrain {
         const taper = 1 - smooth(r.len * 0.8, r.len, v > 0 ? v : 0); // 北端(源头)渐隐
         const wv = r.w0 * (0.5 + 0.6 * (0.5 - v / (2 * r.len)));
         const dist = Math.abs(u - cu(v));
-        const flood = (1 - smooth(wv * 0.9, wv * 4.5, dist)) * taper;
+        const flood = (1 - smooth(wv * 0.9, wv * 13, dist)) * taper;
         const bed = (1 - smooth(wv * 0.55, wv, dist)) * taper;
         h = mix(h, Math.min(h, 16), flood * 0.92);
         h = mix(h, -7, bed);
@@ -214,6 +214,35 @@ export class Terrain {
   /** 生物群系噪声,用于给地表上色(沙漠 / 草地)。 */
   biome(x: number, y: number, z: number): number {
     return this.fbm(x, y, z, 2.2, 3, 1e9, 0.5, 301.5);
+  }
+
+  /**
+   * 植被(森林)密度 0..1。成片的林地 + 林中空地 + 河岸林;高海拔、陡坡、沙地、干旱区稀疏。
+   * @param hn 海拔(米,含夸张)
+   */
+  forest(x: number, y: number, z: number, hn: number, slope: number, biome: number): number {
+    if (hn < 12) return 0;
+    const region = smooth(-0.4, 0.05, this.fbm(x, y, z, 70, 3, 1e9, 0.5, 501.1));
+    const clump = 0.5 + 0.5 * smooth(-0.35, 0.3, this.fbm(x, y, z, 1100, 3, 1e9, 0.5, 733.7));
+    let d = region * clump;
+    // 河岸 / 低洼湿地:树更密
+    d = Math.max(d, 0.75 * (1 - smooth(14, 90, hn)) * smooth(-0.3, 0.2, this.fbm(x, y, z, 300, 2, 1e9, 0.5, 91.3)));
+    d *= 1 - smooth(2200, 3400, hn);
+    d *= 1 - smooth(0.07, 0.24, slope);
+    d *= 1 - 0.85 * smooth(0.15, 0.35, biome);
+    d *= 1 - smooth(0.85, 0.93, Math.abs(y)); // 极地无林
+    return d;
+  }
+
+  /** 点 (x,y,z) 是否落在城市 / 奇观的压平地基里(margin 为额外外扩,米)。 */
+  inFlatZone(x: number, y: number, z: number, margin = 0): boolean {
+    for (const f of this.flats) {
+      const dx = x - f.x;
+      const dy = y - f.y;
+      const dz = z - f.z;
+      if (Math.sqrt(dx * dx + dy * dy + dz * dz) * PLANET_RADIUS < f.outer + margin) return true;
+    }
+    return false;
   }
 
   /** 细节噪声,用于给颜色加一点斑驳。 */
@@ -308,7 +337,7 @@ export class Terrain {
    * @param biome 生物群系噪声
    * @param speck 斑驳噪声
    */
-  color(h: number, slope: number, ny: number, biome: number, speck: number, out: RGB): RGB {
+  color(h: number, slope: number, ny: number, biome: number, speck: number, out: RGB, forest = 0): RGB {
     const hn = h / TERRAIN_EXAGGERATION;
     let r: number;
     let g: number;
@@ -331,6 +360,11 @@ export class Terrain {
       r = mix(0.27 + 0.06 * speck, 0.72, arid);
       g = mix(0.42 + gr * 0.3, 0.6, arid);
       b = mix(0.17, 0.34, arid);
+
+      // 林地:整体压暗、偏深绿,远处看就是一片森林
+      r = mix(r, 0.14, forest * 0.55);
+      g = mix(g, 0.3, forest * 0.5);
+      b = mix(b, 0.1, forest * 0.5);
 
       // 高海拔:草 -> 岩石
       const rock = smooth(1500, 3200, hn);
