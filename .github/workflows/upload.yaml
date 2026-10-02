@@ -41,8 +41,7 @@ jobs:
             yarn install --no-immutable
           fi
 
-      - name: Typecheck (non-blocking)
-        continue-on-error: true
+      - name: Typecheck
         run: yarn typecheck
 
       - name: Build client with CDN asset URLs
