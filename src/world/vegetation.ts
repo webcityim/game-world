@@ -46,7 +46,7 @@ function blob(r: number, detail: number, seed: number, amp: number): THREE.Buffe
   return displace(new THREE.IcosahedronGeometry(r, detail), seed, 0.7 / r, amp * r, 3);
 }
 
-function broadleaf(hi: boolean): THREE.BufferGeometry {
+export function broadleaf(hi: boolean): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const trunk = new THREE.CylinderGeometry(0.17, 0.3, 3.4, hi ? 7 : 5, hi ? 3 : 1);
   xform(trunk, T(0, 1.7, 0));
@@ -77,7 +77,7 @@ function broadleaf(hi: boolean): THREE.BufferGeometry {
   return merge(parts);
 }
 
-function conifer(hi: boolean): THREE.BufferGeometry {
+export function conifer(hi: boolean): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const trunk = new THREE.CylinderGeometry(0.15, 0.28, 2.2, 5, 1);
   xform(trunk, T(0, 1.1, 0));
