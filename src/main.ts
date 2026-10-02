@@ -8,11 +8,21 @@ import { EYE_HEIGHT, PlayerControls, type PhysicsWorld } from "./controls/player
 import { createShopPlaza, SHOP_SIZE } from "./shops/shop";
 import { HTML_IN_CANVAS_NATIVE } from "./shops/htmlTexture";
 import { PAGE_CSS, PAGE_HEIGHT, PAGE_WIDTH } from "./shops/pages";
+import { bindPanel, createMenu } from "./ui/menu";
 import { closeOverlay, isOverlayOpen, openOverlay, setPrompt, toast } from "./ui/ui";
 import { Anchor, pickSites, type SiteSpec } from "./world/anchor";
 import { Planet } from "./world/planet";
 import { Terrain } from "./world/terrain";
-import { createCrystalSpire, createFloatingIsle, createSkyRing, createWorldTree, type Wonder } from "./world/wonders";
+import {
+  createCrystalSpire,
+  createDragonSpine,
+  createFloatingIsle,
+  createGreatArch,
+  createSkyRing,
+  createStoneForest,
+  createWorldTree,
+  type Wonder,
+} from "./world/wonders";
 
 const smooth = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -30,6 +40,7 @@ interface Poi {
   pos: THREE.Vector3;
   look: THREE.Vector3;
   mode: "fly" | "walk";
+  group: "轨道" | "城市" | "奇观";
 }
 
 /** 在 up 处取一个任意的单位切向量。 */
@@ -60,7 +71,11 @@ async function main() {
   // ?webgl 强制使用 WebGL2 后端(排查 WebGPU 驱动问题、无头浏览器截图时用)
   const forceWebGL = params.has("webgl");
   const renderer = new THREE.WebGPURenderer({ antialias: true, logarithmicDepthBuffer: true, forceWebGL });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // 动态分辨率:帧率持续偏低就降渲染分辨率,恢复后再升回来。?dpr=1 可固定分辨率
+  const baseDpr = Number(params.get("dpr")) || Math.min(window.devicePixelRatio, 2);
+  const adaptiveRes = !params.has("dpr");
+  let dpr = baseDpr;
+  renderer.setPixelRatio(dpr);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = !params.has("noshadow");
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -106,7 +121,9 @@ async function main() {
   // 顺序:首都 → 4 个奇观(首都 8~25 km 外,城里抬头就能看到) → 其他城市
   const specs: SiteSpec[] = [
     { minH: 20, maxH: 260, maxSlope: 0.08, accept: (p, h) => lush(p) && flatAround(1800, 160)(p, h) },
-    ...[0, 1, 2, 3].map(() => ({ minH: 20, maxH: 400, maxSlope: 0.15, nearIndex: 0, minAngle: 0.0013, maxAngle: 0.004, sepAngle: 0.0011 })),
+    // 前 3 个奇观落在首都盆地里(4~9 km),其余 4 个在盆地外围的山麓 / 山腰(10~30 km)
+    ...[0, 1, 2].map(() => ({ minH: 20, maxH: 400, maxSlope: 0.15, nearIndex: 0, minAngle: 0.0007, maxAngle: 0.0014, sepAngle: 0.0007 })),
+    ...[0, 1, 2, 3].map(() => ({ minH: 20, maxH: 400, maxSlope: 0.15, nearIndex: 0, minAngle: 0.0017, maxAngle: 0.0048, sepAngle: 0.0012 })),
     { minH: 20, maxH: 500, maxSlope: 0.1, nearIndex: 0, minAngle: 0.006, maxAngle: 0.04, sepAngle: 0.004, accept: (p, h) => lush(p) && flatAround(1500, 180)(p, h) },
     { minH: 20, maxH: 400, maxSlope: 0.1, sepAngle: 0.004, accept: (p, h) => arid(p) && flatAround(1400, 180)(p, h) },
     { minH: 20, maxH: 300, maxSlope: 0.08, nearIndex: 0, minAngle: 0.006, maxAngle: 0.05, sepAngle: 0.004, accept: (p, h) => flatAround(1900, 160)(p, h) },
@@ -114,10 +131,24 @@ async function main() {
   ];
   const sites = pickSites(terrain, specs);
   const capDir = sites[0];
-  const wonderDirs = sites.slice(1, 5);
-  const cityDirs = [capDir, ...sites.slice(5)];
+  const wonderDirs = sites.slice(1, 8);
+  const cityDirs = [capDir, ...sites.slice(8)];
 
-  const wonders: Wonder[] = [createWorldTree(), createFloatingIsle(), createCrystalSpire(), createSkyRing()];
+  const wonders: Wonder[] = [
+    createWorldTree(),
+    createStoneForest(),
+    createGreatArch(),
+    createFloatingIsle(),
+    createCrystalSpire(),
+    createSkyRing(),
+    createDragonSpine(),
+  ];
+
+  // 设计地貌:首都在盆地里,四周群山环绕,一条河从北面的山里蜿蜒流过、汇入南边的湖
+  terrain.addMassif(capDir, 0.35, 9000, 22000, 80000, 1250, 0.6);
+  terrain.addRiver(capDir, 0.35, 3900, 30000, 300, 1);
+  // 青瓦镇(第二座城)也放进山里
+  if (sites[8]) terrain.addMassif(sites[8], -0.6, 5000, 14000, 50000, 1000, 0.3);
 
   // 先读出所有地点的原始海拔,再统一压平(压平会改变 height())
   const groundOf = (d: THREE.Vector3) => Math.max(8, terrain.height(d.x, d.y, d.z, 1e6));
@@ -170,7 +201,7 @@ async function main() {
   capital.addCollider(0, 0, 4.6, 4.6, 0, 1.0);
 
   // ------------------------------------------------------------ 行星与奇观
-  const planet = new Planet(terrain);
+  const planet = new Planet(terrain, params.has("veg") ? Number(params.get("veg")) : 1);
   scene.add(planet.group);
 
   const wonderAnchors = wonders.map((w, i) => {
@@ -287,32 +318,64 @@ async function main() {
       pos: c.toPlanet(v.pos, new THREE.Vector3()),
       look: c.toPlanet(v.look, new THREE.Vector3()),
       mode: kind === "street" ? "walk" : "fly",
+      group: "城市",
     });
   };
-  pois.push({ name: "轨道 / Orbit", pos: capDir.clone().multiplyScalar(R * 2.6), look: new THREE.Vector3(), mode: "fly" });
+  pois.push({ name: "轨道 / Orbit", pos: capDir.clone().multiplyScalar(R * 2.6), look: new THREE.Vector3(), mode: "fly", group: "轨道" });
   addCityPoi(capital, "aerial");
   addCityPoi(capital, "street");
   for (const c of cities.slice(1)) addCityPoi(c, "aerial");
   wonders.forEach((w, i) => {
     const a = wonderAnchors[i];
-    const t = tangentAt(a.up);
+    // 机位放在奇观朝向首都(盆地)的一侧:那边地势低、视野开阔,不会钻进山里
+    const toCap = capDir.clone().addScaledVector(a.up, -capDir.dot(a.up));
+    const t = toCap.lengthSq() > 1e-12 ? toCap.normalize() : tangentAt(a.up);
+    const pos = a.pos.clone().addScaledVector(a.up, w.view.height).addScaledVector(t, w.view.back);
+    // 保证机位在地面之上
+    const pu = pos.clone().normalize();
+    const floor = R + Math.max(0, planet.heightAt(pu)) + 80;
+    if (pos.length() < floor) pos.setLength(floor);
     pois.push({
       name: w.name,
       look: a.pos.clone().addScaledVector(a.up, w.view.height * 0.7),
-      pos: a.pos.clone().addScaledVector(a.up, w.view.height).addScaledVector(t, w.view.back),
+      pos,
       mode: "fly",
+      group: "奇观",
     });
   });
 
   let poiIndex = 0;
-  const goto = (i: number) => {
+  // 信息面板 / 说明:都可以折叠(菜单里的按钮或 I / H 键),状态会记住;窄屏默认收起
+  const wide = window.innerWidth >= 1000;
+  const toggleHud = bindPanel(hud, "hud-on", wide);
+  const toggleHelp = bindPanel(help, "help-on", wide);
+  let menu: ReturnType<typeof createMenu> | null = null;
+  /** smooth = true 时沿弧线平滑飞过去;初始进入和 ?poi= 用瞬移 */
+  const goto = (i: number, smooth = true) => {
     poiIndex = ((i % pois.length) + pois.length) % pois.length;
     const p = pois[poiIndex];
-    controls.teleport(p.pos, p.look, p.mode);
-    toast(`传送:${p.name}`, 1800);
+    if (smooth) {
+      if (isOverlayOpen()) closeOverlay();
+      controls.flyTo(p.pos, p.look, p.mode);
+      toast(`飞往:${p.name}`, 1800);
+    } else controls.teleport(p.pos, p.look, p.mode);
+    menu?.setActive(p.name);
   };
+  const cycleTime = () => {
+    timeOffset += Math.PI / 4;
+    toast("时间快进 3 小时", 1200);
+  };
+  menu = createMenu(
+    pois.map((p, i) => ({ label: p.name, group: p.group, onClick: () => goto(i) })),
+    [
+      { label: "飞行 / 步行", onClick: () => controls.setMode(controls.mode === "fly" ? "walk" : "fly") },
+      { label: "快进 3 小时", onClick: cycleTime },
+      { label: "信息 I", onClick: toggleHud },
+      { label: "说明 H", onClick: toggleHelp },
+    ],
+  );
   const startPoi = Number(params.get("poi") ?? "2") - 1;
-  goto(Number.isFinite(startPoi) ? startPoi : 1);
+  goto(Number.isFinite(startPoi) ? startPoi : 1, false);
 
   // ------------------------------------------------------------ 主循环
   window.addEventListener("resize", () => {
@@ -327,6 +390,9 @@ async function main() {
   let last = performance.now();
   let hudTimer = 0;
   let fps = 60;
+  let slowT = 0;
+  let fastT = 0;
+  let frameNo = 0;
 
   renderer.setAnimationLoop(() => {
     // 用 performance.now() 而不是回调参数:某些环境(无头浏览器、后台标签)回调时间戳与真实时间不一致
@@ -334,6 +400,24 @@ async function main() {
     const dt = Math.min(0.1, Math.max(0.0001, (nowMs - last) / 1000));
     last = nowMs;
     fps += (1 / dt - fps) * 0.05;
+    if (adaptiveRes && nowMs > 8000) {
+      if (fps < 38) {
+        slowT += dt;
+        fastT = 0;
+      } else if (fps > 56) {
+        fastT += dt;
+        slowT = 0;
+      } else slowT = fastT = 0;
+      if (slowT > 1.5 && dpr > 0.55) {
+        dpr = Math.max(0.55, dpr * 0.8);
+        renderer.setPixelRatio(dpr);
+        slowT = 0;
+      } else if (fastT > 6 && dpr < baseDpr) {
+        dpr = Math.min(baseDpr, dpr * 1.15);
+        renderer.setPixelRatio(dpr);
+        fastT = 0;
+      }
+    }
     const t = nowMs / 1000;
 
     // ---- 输入
@@ -348,11 +432,11 @@ async function main() {
       } else if (code === "KeyL") controls.levelHorizon();
       else if (code === "KeyF" || code === "Enter") interact = true;
       else if (code === "KeyG") toggleMode = true;
-      else if (code === "KeyH") help.classList.toggle("hidden");
-      else if (code === "KeyT") {
-        timeOffset += Math.PI / 4;
-        toast("时间快进 3 小时", 1200);
-      } else if (code === "Escape" && isOverlayOpen()) closeOverlay();
+      else if (code === "KeyH") toggleHelp();
+      else if (code === "KeyI") toggleHud();
+      else if (code === "KeyM") menu?.toggle();
+      else if (code === "KeyT") cycleTime();
+      else if (code === "Escape" && isOverlayOpen()) closeOverlay();
     }
 
     if (isOverlayOpen()) {
@@ -369,7 +453,14 @@ async function main() {
         controls.setMode(controls.mode === "fly" ? "walk" : "fly");
         toast(controls.mode === "walk" ? "步行模式:左摇杆移动,B 跳跃" : "飞行模式", 1600);
       }
-      controls.update(dt, input, pad);
+      if (controls.flying) {
+        // 任意摇杆 / 移动键 / 拖动视角 = 打断飞行,交还控制
+        const ax = pad.axes;
+        const stick = Math.max(Math.abs(ax.leftX), Math.abs(ax.leftY), Math.abs(ax.rightX), Math.abs(ax.rightY));
+        const keys = ["KeyW", "KeyA", "KeyS", "KeyD", "Space", "KeyC"].some((k) => input.keys.has(k));
+        if (stick > 0.6 || keys) controls.cancelFlight();
+      }
+      if (!controls.stepFlight(dt)) controls.update(dt, input, pad);
     }
     controls.applyTo(camera);
     const cam = controls.pos;
@@ -396,7 +487,14 @@ async function main() {
         nearest = c;
       }
     }
+    // 奇观:远处整体隐藏,中等距离只画主体,靠近了才显示细节层
     wonders.forEach((w, i) => {
+      const d = cam.distanceTo(wonderAnchors[i].pos);
+      const show = d < 300_000;
+      w.group.visible = show;
+      if (!show) return;
+      if (w.detail) w.detail.visible = d < (w.detailDistance ?? Infinity);
+      w.setDistance?.(d);
       w.update?.(t);
       wonderAnchors[i].update(cam);
     });
@@ -420,7 +518,13 @@ async function main() {
     sun.position.copy(sunDir).multiplyScalar(600);
     sun.target.position.set(0, 0, 0);
     sun.intensity = 3.0 * smooth(-0.05, 0.2, sunUp);
-    sun.castShadow = controls.altitude < 1500 && sunUp > 0;
+    // 不要在运行时切换 sun.castShadow:three 的节点光照会按它重建 / 初始化阴影贴图,
+    // 中途打开会在 WebGPU 下抛 "Cannot read properties of null (reading 'depthTexture')"。
+    // 改为暂停阴影贴图的更新(省掉高空和夜里的渲染开销)。
+    // 阴影贴图隔帧更新:近处才需要,而且每帧重画一遍全部建筑太贵
+    const wantShadow = controls.altitude < 1500 && sunUp > 0;
+    sun.shadow.autoUpdate = false;
+    sun.shadow.needsUpdate = wantShadow && frameNo++ % 2 === 0;
     hemi.position.copy(camDir);
     hemi.intensity = 0.15 + 0.85 * day;
     ambient.intensity = 0.06 + 0.1 * night;
@@ -442,7 +546,7 @@ async function main() {
 
     // ---- HUD
     hudTimer += dt;
-    if (hudTimer > 0.15) {
+    if (hudTimer > 0.15 && !hud.classList.contains("hidden")) {
       hudTimer = 0;
       const s = planet.stats;
       const cs = nearest.stats;
@@ -456,7 +560,7 @@ async function main() {
         `城市 City    ${nearest.name} ${fmtDist(nearestDist)} · ${status}`,
         `时间 Time    ${String(Math.floor(hours)).padStart(2, "0")}:${String(Math.floor((hours % 1) * 60)).padStart(2, "0")} (T 快进) · 摩拉 ${mora}`,
         `地形块 Chunks ${s.active} / ${s.built} · LOD ${s.maxLevel}/${MAX_LEVEL}`,
-        `渲染 Backend ${backendName} · ${fps.toFixed(0)} fps`,
+        `渲染 Backend ${backendName} · ${fps.toFixed(0)} fps · 分辨率 x${dpr.toFixed(2)}`,
         `HTML-in-Canvas ${HTML_IN_CANVAS_NATIVE ? "native" : "SVG fallback"} · 活跃页面 ${plaza.activeCount()}/${plaza.shops.length}`,
         `手柄 Gamepad ${pad.connected ? pad.id.slice(0, 32) : "未连接(按任意键唤醒)"}`,
         `书签 Bookmark ${poiIndex + 1}/${pois.length} ${pois[poiIndex].name}`,

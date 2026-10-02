@@ -68,6 +68,24 @@ export class PlayerControls {
   grounded = false;
   world: PhysicsWorld | null = null;
 
+  private flight: {
+    t: number;
+    duration: number;
+    d0: THREE.Vector3;
+    d1: THREE.Vector3;
+    angle: number;
+    r0: number;
+    r1: number;
+    bump: number;
+    h0: THREE.Vector3;
+    h1: THREE.Vector3;
+    p0: number;
+    p1: number;
+    roll0: number;
+    mode: MoveMode;
+    pos: THREE.Vector3;
+    target: THREE.Vector3;
+  } | null = null;
   private leveling = false;
   private readonly velocity = new THREE.Vector3();
   private readonly up = new THREE.Vector3();
@@ -89,6 +107,7 @@ export class PlayerControls {
 
   /** 传送到 pos,并朝向 target(行星坐标);同时回正翻滚。 */
   teleport(pos: THREE.Vector3, target: THREE.Vector3, mode: MoveMode = this.mode) {
+    this.flight = null;
     this.pos.copy(pos);
     this.velocity.set(0, 0, 0);
     this.roll = 0;
@@ -97,7 +116,100 @@ export class PlayerControls {
     this.lookAt(target);
   }
 
+  /** 是否正在做预设位置之间的平滑飞行 */
+  get flying(): boolean {
+    return this.flight !== null;
+  }
+
+  /**
+   * 平滑飞向 pos 并朝向 target:沿球面弧线(方向球面插值 + 高度抬升),
+   * 视线朝向缓动过渡,距离越远耗时越长。到达后切换到 mode。
+   */
+  flyTo(pos: THREE.Vector3, target: THREE.Vector3, mode: MoveMode) {
+    // 先借 lookAt 算出目的地的朝向 / 俯仰
+    const savePos = this.pos.clone();
+    const saveHeading = this.heading.clone();
+    const savePitch = this.pitch;
+    this.pos.copy(pos);
+    this.lookAt(target);
+    const toHeading = this.heading.clone();
+    const toPitch = this.pitch;
+    this.pos.copy(savePos);
+    this.heading.copy(saveHeading);
+    this.pitch = savePitch;
+
+    const r0 = savePos.length();
+    const r1 = pos.length();
+    const d0 = savePos.clone().normalize();
+    const d1 = pos.clone().normalize();
+    const angle = Math.acos(clamp(d0.dot(d1), -1, 1));
+    const dist = angle * Math.max(r0, r1);
+    const duration = clamp(1.4 + Math.log10(Math.max(dist, 10) / 50) * 1.15, 1.6, 6);
+    // 弧线最高点:远距离升到高空,近距离只略微抬起
+    const bump = Math.min(dist * 0.28, PLANET_RADIUS * 0.6);
+    this.velocity.set(0, 0, 0);
+    this.leveling = false;
+    this.mode = "fly";
+    this.flight = {
+      t: 0,
+      duration,
+      d0,
+      d1,
+      angle,
+      r0,
+      r1,
+      bump,
+      h0: saveHeading.clone().addScaledVector(d0, -saveHeading.dot(d0)).normalize(),
+      h1: toHeading,
+      p0: savePitch,
+      p1: toPitch,
+      roll0: this.roll,
+      mode,
+      pos: pos.clone(),
+      target: target.clone(),
+    };
+  }
+
+  cancelFlight() {
+    this.flight = null;
+  }
+
+  /** 推进平滑飞行;返回 true 表示本帧由飞行接管(调用方应跳过 update)。 */
+  stepFlight(dt: number): boolean {
+    const f = this.flight;
+    if (!f) return false;
+    f.t = Math.min(1, f.t + dt / f.duration);
+    const k = f.t;
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; // easeInOutCubic
+    const sinA = Math.sin(f.angle);
+    let dir: THREE.Vector3;
+    if (sinA < 1e-6) dir = this.tmp.copy(f.d1);
+    else {
+      const a = Math.sin((1 - e) * f.angle) / sinA;
+      const b = Math.sin(e * f.angle) / sinA;
+      dir = this.tmp.copy(f.d0).multiplyScalar(a).addScaledVector(f.d1, b);
+    }
+    dir.normalize();
+    const r = f.r0 + (f.r1 - f.r0) * e + f.bump * Math.sin(Math.PI * e);
+    this.pos.copy(dir).multiplyScalar(r);
+    // 朝向:水平朝向在球面上线性混合后投影到切平面,俯仰 / 翻滚线性缓动
+    this.heading.copy(f.h0).lerp(f.h1, e);
+    this.heading.addScaledVector(dir, -this.heading.dot(dir));
+    if (this.heading.lengthSq() < 1e-10) this.heading.copy(f.h1);
+    this.heading.normalize();
+    this.pitch = f.p0 + (f.p1 - f.p0) * e;
+    this.roll = f.roll0 * (1 - e);
+    this.speed = 0;
+    if (f.t >= 1) {
+      this.flight = null;
+      this.teleport(f.pos, f.target, f.mode);
+      if (f.mode === "walk" && this.world) this.world.drop(this.pos, EYE_HEIGHT);
+    }
+    return true;
+  }
+
   setMode(mode: MoveMode) {
+    this.flight = null;
     if (mode === this.mode) return;
     this.mode = mode;
     this.velocity.set(0, 0, 0);

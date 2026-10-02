@@ -1,7 +1,8 @@
 import * as THREE from "three/webgpu";
-import { color, mix, sin, time } from "three/tsl";
+import { attribute, color, mix, smoothstep, sin, time } from "three/tsl";
 import { BUILD_BUDGET_MS, GRID, MAX_LEVEL, PLANET_RADIUS, SPLIT_FACTOR } from "../config";
 import { Terrain, type RGB } from "./terrain";
+import { Vegetation, VEG_MIN_LEVEL, type VegChunk } from "./vegetation";
 
 /**
  * 立方体球面 + 四叉树 LOD。
@@ -49,6 +50,8 @@ interface ChunkNode {
   j: number;
   dir: THREE.Vector3;
   center: THREE.Vector3;
+  /** 用于 LOD 距离判断的中心:center 抬升到块内平均海拔(山地块离海平面几千米,否则永远细分不下去) */
+  lodCenter: THREE.Vector3;
   /** 块的边长(米,近似) */
   size: number;
   /** 块的角半径(弧度) */
@@ -58,6 +61,9 @@ interface ChunkNode {
   children?: ChunkNode[];
   land?: THREE.Mesh;
   water?: THREE.Mesh;
+  veg?: VegChunk | null;
+  /** veg 已经尝试生成过(null 也算) */
+  vegDone?: boolean;
 }
 
 export interface PlanetStats {
@@ -84,8 +90,11 @@ export class Planet {
   private readonly tmpDir = new THREE.Vector3();
   private readonly color: RGB = [0, 0, 0];
 
-  constructor(terrain: Terrain) {
+  private readonly vegetation: Vegetation;
+
+  constructor(terrain: Terrain, vegDensity = 1) {
     this.terrain = terrain;
+    this.vegetation = new Vegetation(terrain, vegDensity);
 
     // 单面渲染:之前用 DoubleSide 时,裙边的背面法线被翻转,在地面上显示成一条条黑线
     this.landMaterial = new THREE.MeshStandardNodeMaterial({
@@ -103,8 +112,21 @@ export class Planet {
       metalness: 0.05,
       depthWrite: false,
     });
-    const shimmer = sin(time.mul(0.35)).mul(0.5).add(0.5);
-    this.waterMaterial.colorNode = mix(color(0x154f8a), color(0x1f6fb0), shimmer);
+    // 水面:按水深从浅青渐变到深蓝,岸边泛白,叠加随时间流动的波纹。
+    // wpos 是行星坐标按 4096 m 取模的结果,波纹频率取 2π·整数/4096,所以跨地形块无缝。
+    const depth = attribute("wdepth", "float");
+    const wp = attribute("wpos", "vec3");
+    const k = (Math.PI * 2) / 4096;
+    // 三组斜向波叠加(不用正弦相乘,否则会出现棋盘格)
+    const ripple = sin(wp.x.add(wp.z).mul(k * 70).add(time.mul(1.1)))
+      .add(sin(wp.x.sub(wp.z).mul(k * 53).sub(time.mul(1.4))).mul(0.8))
+      .add(sin(wp.y.mul(k * 113).add(wp.x.mul(k * 29)).add(time.mul(2.1))).mul(0.5))
+      .mul(0.45);
+    const body = mix(color(0x3aa9b8), color(0x0f3f7a), smoothstep(0.02, 0.55, depth));
+    const foam = smoothstep(0.1, 0.0, depth);
+    this.waterMaterial.colorNode = body.add(ripple.mul(0.045)).add(foam.mul(0.55).mul(ripple.mul(0.3).add(0.8)));
+    this.waterMaterial.opacityNode = mix(0.5, 0.92, smoothstep(0.0, 0.3, depth));
+    this.waterMaterial.roughnessNode = mix(0.35, 0.1, smoothstep(0.0, 0.3, depth));
 
     for (let f = 0; f < 6; f++) {
       const root = this.makeNode(f, 0, 0, 0);
@@ -140,6 +162,7 @@ export class Planet {
       j,
       dir,
       center: dir.clone().multiplyScalar(R),
+      lodCenter: dir.clone().multiplyScalar(R),
       size,
       angRadius: (Math.PI / 2 / tiles) * 0.8,
       ready: false,
@@ -152,12 +175,15 @@ export class Planet {
   private childrenOf(node: ChunkNode): ChunkNode[] {
     if (!node.children) {
       const l = node.level + 1;
+      const parentH = node.lodCenter.length() - PLANET_RADIUS;
       node.children = [
         this.makeNode(node.face, l, node.i * 2, node.j * 2),
         this.makeNode(node.face, l, node.i * 2 + 1, node.j * 2),
         this.makeNode(node.face, l, node.i * 2, node.j * 2 + 1),
         this.makeNode(node.face, l, node.i * 2 + 1, node.j * 2 + 1),
       ];
+      // 子块在建好之前先沿用父块的海拔来判断距离
+      for (const k of node.children) k.lodCenter.copy(k.dir).multiplyScalar(PLANET_RADIUS + parentH);
     }
     return node.children;
   }
@@ -169,13 +195,13 @@ export class Planet {
 
   private visit(node: ChunkNode, cam: THREE.Vector3, horizon: number, t0: number) {
     node.lastUsed = this.frame;
-    const dist = cam.distanceTo(node.center);
+    const dist = cam.distanceTo(node.lodCenter);
     const wantSplit = node.level < MAX_LEVEL && dist < node.size * SPLIT_FACTOR;
 
     if (wantSplit) {
       const kids = this.childrenOf(node)
         .filter((k) => !this.culled(k, horizon))
-        .sort((a, b) => cam.distanceToSquared(a.center) - cam.distanceToSquared(b.center));
+        .sort((a, b) => cam.distanceToSquared(a.lodCenter) - cam.distanceToSquared(b.lodCenter));
 
       for (const k of kids) {
         if (!k.ready && performance.now() - t0 < BUILD_BUDGET_MS) this.build(k);
@@ -197,6 +223,7 @@ export class Planet {
     for (const n of this.active) {
       if (n.land) n.land.visible = false;
       if (n.water) n.water.visible = false;
+      if (n.veg) n.veg.group.visible = false;
     }
     this.active = [];
 
@@ -208,6 +235,21 @@ export class Planet {
       if (!this.culled(root, horizon)) this.visit(root, cam, horizon, t0);
     }
 
+    // 植被:每帧最多给最近的一个活动块生成(地形先出来,树随后长出来)
+    let nextVeg: ChunkNode | null = null;
+    let nextD = Infinity;
+    for (const n of this.active) {
+      if (n.level >= VEG_MIN_LEVEL && !n.vegDone && n.ready) {
+        const d = cam.distanceToSquared(n.lodCenter);
+        if (d < nextD) {
+          nextD = d;
+          nextVeg = n;
+        }
+      }
+    }
+    // 植被有自己的预算:每帧一块,不和地形块抢(否则地形还在细分时树永远长不出来)
+    if (nextVeg) this.buildVeg(nextVeg);
+
     for (const n of this.active) {
       if (n.land) {
         n.land.position.copy(n.center).sub(cam);
@@ -216,6 +258,19 @@ export class Planet {
       if (n.water) {
         n.water.position.copy(n.center).sub(cam);
         n.water.visible = true;
+      }
+      if (n.veg) {
+        n.veg.group.position.copy(n.center).sub(cam);
+        n.veg.group.visible = true;
+        // 草丛 / 花 / 岩石只在很近时画
+        const near = cam.distanceTo(n.lodCenter) < n.size * 0.5 + 170;
+        for (const g of n.veg.ground) g.visible = near;
+        // 精细树只在近处;稍远换中等精度,更远(级别 13/14)本来就是低模
+        if (n.veg.treesHi.length) {
+          const fine = cam.distanceTo(n.lodCenter) < n.size * 0.5 + 420;
+          for (const o of n.veg.treesHi) o.visible = fine;
+          for (const o of n.veg.treesMid) o.visible = !fine;
+        }
       }
     }
 
@@ -234,7 +289,35 @@ export class Planet {
     }
   }
 
+  private buildVeg(n: ChunkNode) {
+    n.vegDone = true;
+    if (!n.land) return;
+    const geo = n.land.geometry;
+    const veg = this.vegetation.build({
+      level: n.level,
+      face: n.face,
+      i: n.i,
+      j: n.j,
+      size: n.size,
+      center: n.center,
+      pos: geo.getAttribute("position").array as Float32Array,
+      nor: geo.getAttribute("normal").array as Float32Array,
+      N: GRID,
+    });
+    if (veg) {
+      veg.group.visible = false;
+      this.group.add(veg.group);
+      n.veg = veg;
+    }
+  }
+
   private dispose(n: ChunkNode) {
+    if (n.veg) {
+      this.group.remove(n.veg.group);
+      n.veg.dispose();
+      n.veg = undefined;
+    }
+    n.vegDone = false;
     if (n.land) {
       this.group.remove(n.land);
       n.land.geometry.dispose();
@@ -332,13 +415,15 @@ export class Planet {
         nor[vi * 3 + 2] = nz;
 
         const slope = 1 - (nx * dx + ny * dy + nz * dz);
+        const biome = terrain.biome(dx, dy, dz);
         terrain.color(
           h,
           slope,
           dy,
-          terrain.biome(dx, dy, dz),
+          biome,
           terrain.speckle(dx, dy, dz, maxFreq),
           this.color,
+          terrain.forest(dx, dy, dz, h, slope, biome),
         );
         col[vi * 3] = this.color[0];
         col[vi * 3 + 1] = this.color[1];
@@ -405,6 +490,9 @@ export class Planet {
     if (minH < 0) {
       const wpos = new Float32Array(mainCount * 3);
       const wnor = new Float32Array(mainCount * 3);
+      const wdepth = new Float32Array(mainCount);
+      const cmod = new THREE.Vector3(((center.x % 4096) + 4096) % 4096, ((center.y % 4096) + 4096) % 4096, ((center.z % 4096) + 4096) % 4096);
+      const wwrap = new Float32Array(mainCount * 3);
       for (let j = 0; j <= N; j++) {
         for (let i = 0; i <= N; i++) {
           const gi = (j + 1) * M + (i + 1);
@@ -418,11 +506,18 @@ export class Planet {
           wnor[vi * 3] = dx;
           wnor[vi * 3 + 1] = dy;
           wnor[vi * 3 + 2] = dz;
+          wdepth[vi] = Math.min(1, Math.max(0, -heights[gi] / 60));
+          // 块内连续(不在块内取模,避免插值跨越回绕点);块之间靠 4096 周期对齐
+          wwrap[vi * 3] = wpos[vi * 3] + cmod.x;
+          wwrap[vi * 3 + 1] = wpos[vi * 3 + 1] + cmod.y;
+          wwrap[vi * 3 + 2] = wpos[vi * 3 + 2] + cmod.z;
         }
       }
       const wgeo = new THREE.BufferGeometry();
       wgeo.setAttribute("position", new THREE.BufferAttribute(wpos, 3));
       wgeo.setAttribute("normal", new THREE.BufferAttribute(wnor, 3));
+      wgeo.setAttribute("wdepth", new THREE.BufferAttribute(wdepth, 1));
+      wgeo.setAttribute("wpos", new THREE.BufferAttribute(wwrap, 3));
       wgeo.setIndex(new THREE.BufferAttribute(new Uint16Array(idx.slice(0, N * N * 6)), 1));
       wgeo.computeBoundingSphere();
       const water = new THREE.Mesh(wgeo, this.waterMaterial);
@@ -432,6 +527,9 @@ export class Planet {
       node.water = water;
     }
 
+    // 块中心的海拔(取中间那个顶点)
+    const mid = (Math.floor(N / 2) + 1) * M + Math.floor(N / 2) + 1;
+    node.lodCenter.copy(node.dir).multiplyScalar(R + heights[mid]);
     node.ready = true;
     this.builtCount++;
   }
