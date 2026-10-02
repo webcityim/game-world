@@ -105,7 +105,9 @@ src/
     terrain.ts         海拔函数(大陆 / 山脉 / 丘陵 / 河谷)、地表配色、压平区域
     planet.ts          立方体球面 + 四叉树 LOD、水面、裙边、浮动原点
     anchor.ts          挂在行星表面的锚点(本地 ↔ 行星坐标)+ 选址(pickSites)
-    wonders.ts         奇观:世界树、浮空岛、水晶尖塔、天环
+    wonders.ts         奇观入口(再导出 wonder/*:世界树、石林、天然拱门、浮空岛、水晶尖塔、天环、龙脊)
+    vegetation.ts      实例化植被(树、灌木、草、花、石),按 LOD 分层
+    geo.ts             程序化几何工具(扫掠、位移、焊接、顶点着色)
   shops/
     htmlTexture.ts     HTML in Canvas(原生 drawElementImage / SVG foreignObject 兜底)
     patterns.ts        生成式图案 SVG:Clifford / Lorenz / Rule 30 / 内摆线
