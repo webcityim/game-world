@@ -1,20 +1,18 @@
 import * as THREE from "three/webgpu";
 import "./style.css";
 import { DAY_LENGTH_SECONDS, GRID, MAX_LEVEL, PLANET_RADIUS, TERRAIN_EXAGGERATION } from "./config";
-import { FlyControls } from "./controls/fly";
+import { City, type CityDef, type CityHooks } from "./city/city";
+import { uNight } from "./city/material";
 import { Input } from "./controls/input";
-import { createShopPlaza } from "./shops/shop";
+import { EYE_HEIGHT, PlayerControls, type PhysicsWorld } from "./controls/player";
+import { createShopPlaza, SHOP_SIZE } from "./shops/shop";
 import { HTML_IN_CANVAS_NATIVE } from "./shops/htmlTexture";
-import { Anchor, pickSites } from "./world/anchor";
+import { PAGE_CSS, PAGE_HEIGHT, PAGE_WIDTH } from "./shops/pages";
+import { closeOverlay, isOverlayOpen, openOverlay, setPrompt, toast } from "./ui/ui";
+import { Anchor, pickSites, type SiteSpec } from "./world/anchor";
 import { Planet } from "./world/planet";
 import { Terrain } from "./world/terrain";
-import {
-  createCrystalSpire,
-  createFloatingIsle,
-  createSkyRing,
-  createWorldTree,
-  type Wonder,
-} from "./world/wonders";
+import { createCrystalSpire, createFloatingIsle, createSkyRing, createWorldTree, type Wonder } from "./world/wonders";
 
 const smooth = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -24,13 +22,14 @@ const smooth = (a: number, b: number, x: number) => {
 function fmtDist(m: number): string {
   if (m >= 100_000) return `${(m / 1000).toFixed(0)} km`;
   if (m >= 1000) return `${(m / 1000).toFixed(2)} km`;
-  return `${m.toFixed(0)} m`;
+  return `${m.toFixed(m < 10 ? 1 : 0)} m`;
 }
 
 interface Poi {
   name: string;
-  target: THREE.Vector3;
-  viewPos: THREE.Vector3;
+  pos: THREE.Vector3;
+  look: THREE.Vector3;
+  mode: "fly" | "walk";
 }
 
 /** 在 up 处取一个任意的单位切向量。 */
@@ -40,15 +39,31 @@ function tangentAt(up: THREE.Vector3): THREE.Vector3 {
   return t.normalize();
 }
 
+/** 城市定义:首都 + 四种风格各一座 + 一个村庄 */
+const CITY_DEFS: CityDef[] = [
+  { id: "windhaven", name: "风岚城", style: "meadow", radius: 560, seed: 1101, walls: true, capital: true, npcs: 170 },
+  { id: "bluetile", name: "青瓦镇", style: "orient", radius: 460, seed: 2203, npcs: 110 },
+  { id: "goldsand", name: "金沙城", style: "desert", radius: 420, seed: 3307, npcs: 110 },
+  { id: "neonspire", name: "霓虹都", style: "neo", radius: 720, seed: 4409, npcs: 140 },
+  { id: "wheatwave", name: "麦浪村", style: "meadow", radius: 230, seed: 5501, npcs: 40 },
+];
+
 async function main() {
   const boot = document.getElementById("boot")!;
   const hud = document.getElementById("hud")!;
+  const help = document.getElementById("help")!;
+  const helpMode = document.getElementById("help-mode")!;
   const appEl = document.getElementById("app")!;
+  const params = new URLSearchParams(location.search);
 
   // ------------------------------------------------------------ 渲染器(WebGPU,不支持时自动回落 WebGL2)
-  const renderer = new THREE.WebGPURenderer({ antialias: true, logarithmicDepthBuffer: true });
+  // ?webgl 强制使用 WebGL2 后端(排查 WebGPU 驱动问题、无头浏览器截图时用)
+  const forceWebGL = params.has("webgl");
+  const renderer = new THREE.WebGPURenderer({ antialias: true, logarithmicDepthBuffer: true, forceWebGL });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = !params.has("noshadow");
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   appEl.appendChild(renderer.domElement);
   await renderer.init();
   const backendName = (renderer.backend as unknown as { isWebGPUBackend?: boolean }).isWebGPUBackend
@@ -57,67 +72,144 @@ async function main() {
 
   const scene = new THREE.Scene();
   const spaceColor = new THREE.Color(0x01020a);
-  const skyColor = new THREE.Color(0x6fb2ff);
+  const skyColor = new THREE.Color(0x7db8f0);
+  const duskColor = new THREE.Color(0xe08a5a);
+  const nightSky = new THREE.Color(0x0a1022);
   const background = new THREE.Color().copy(spaceColor);
   scene.background = background;
+  const fog = new THREE.FogExp2(0x7db8f0, 0);
+  scene.fog = fog;
 
-  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.5, 3e8);
+  const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.3, 3e8);
 
-  // ------------------------------------------------------------ 世界
+  boot.textContent = "正在选址 …";
+  await new Promise((r) => setTimeout(r, 0));
+
+  // ------------------------------------------------------------ 地形与选址
   const terrain = new Terrain();
+  const R = PLANET_RADIUS;
+  const flatAround = (radius: number, maxDiff: number) => (p: THREE.Vector3, h0: number) => {
+    const a = radius / R;
+    const t1 = tangentAt(p);
+    const t2 = new THREE.Vector3().crossVectors(p, t1).normalize();
+    for (let k = 0; k < 12; k++) {
+      const ang = (k / 12) * Math.PI * 2;
+      const q = p.clone().addScaledVector(t1, Math.cos(ang) * a).addScaledVector(t2, Math.sin(ang) * a).normalize();
+      const h = terrain.height(q.x, q.y, q.z, 4e5);
+      if (h < 4 || Math.abs(h - h0) > maxDiff) return false;
+    }
+    return true;
+  };
+  const lush = (p: THREE.Vector3) => terrain.biome(p.x, p.y, p.z) < 0.05;
+  const arid = (p: THREE.Vector3) => terrain.biome(p.x, p.y, p.z) > 0.22 && Math.abs(p.y) < 0.3;
 
-  // 选址必须在任何地形块生成之前,然后把地基压平
-  const sites = pickSites(terrain, [
-    { minH: 30, maxH: 220, maxSlope: 0.12 }, // 商铺广场
-    { minH: 30, maxH: 260, maxSlope: 0.15, nearIndex: 0, minAngle: 0.012, maxAngle: 0.1 },
-    { minH: 30, maxH: 260, maxSlope: 0.15, nearIndex: 0, minAngle: 0.012, maxAngle: 0.1 },
-    { minH: 30, maxH: 260, maxSlope: 0.15, nearIndex: 0, minAngle: 0.012, maxAngle: 0.1 },
-    { minH: 30, maxH: 260, maxSlope: 0.15, nearIndex: 0, minAngle: 0.012, maxAngle: 0.1 },
-  ]);
-  const [plazaDir, ...wonderDirs] = sites;
+  // 顺序:首都 → 4 个奇观(首都 8~25 km 外,城里抬头就能看到) → 其他城市
+  const specs: SiteSpec[] = [
+    { minH: 20, maxH: 260, maxSlope: 0.08, accept: (p, h) => lush(p) && flatAround(1800, 160)(p, h) },
+    ...[0, 1, 2, 3].map(() => ({ minH: 20, maxH: 400, maxSlope: 0.15, nearIndex: 0, minAngle: 0.0013, maxAngle: 0.004, sepAngle: 0.0011 })),
+    { minH: 20, maxH: 500, maxSlope: 0.1, nearIndex: 0, minAngle: 0.006, maxAngle: 0.04, sepAngle: 0.004, accept: (p, h) => lush(p) && flatAround(1500, 180)(p, h) },
+    { minH: 20, maxH: 400, maxSlope: 0.1, sepAngle: 0.004, accept: (p, h) => arid(p) && flatAround(1400, 180)(p, h) },
+    { minH: 20, maxH: 300, maxSlope: 0.08, nearIndex: 0, minAngle: 0.006, maxAngle: 0.05, sepAngle: 0.004, accept: (p, h) => flatAround(1900, 160)(p, h) },
+    { minH: 20, maxH: 300, maxSlope: 0.1, nearIndex: 0, minAngle: 0.0035, maxAngle: 0.008, sepAngle: 0.002, accept: (p, h) => flatAround(900, 160)(p, h) },
+  ];
+  const sites = pickSites(terrain, specs);
+  const capDir = sites[0];
+  const wonderDirs = sites.slice(1, 5);
+  const cityDirs = [capDir, ...sites.slice(5)];
 
   const wonders: Wonder[] = [createWorldTree(), createFloatingIsle(), createCrystalSpire(), createSkyRing()];
 
-  const groundOf = (d: THREE.Vector3) => terrain.height(d.x, d.y, d.z, 1e6);
-  const plazaGround = groundOf(plazaDir);
-  terrain.addFlatZone(plazaDir, 120, 280, plazaGround);
-  const wonderGrounds = wonderDirs.map((d, i) => {
-    const h = groundOf(d);
-    terrain.addFlatZone(d, wonders[i].footprint.inner, wonders[i].footprint.outer, h);
-    return h;
-  });
+  // 先读出所有地点的原始海拔,再统一压平(压平会改变 height())
+  const groundOf = (d: THREE.Vector3) => Math.max(8, terrain.height(d.x, d.y, d.z, 1e6));
+  const cityGrounds = cityDirs.map(groundOf);
+  const wonderGrounds = wonderDirs.map(groundOf);
 
+  // ------------------------------------------------------------ 城市
+  let mora = 0;
+  let night = 0;
+  const controls = new PlayerControls();
+  const hooks: CityHooks = {
+    toast: (m) => toast(m),
+    reward: (n) => {
+      mora += n;
+    },
+    teleport: (city, local, look) => {
+      const p = city.toPlanet(local, new THREE.Vector3());
+      const l = city.toPlanet(look, new THREE.Vector3());
+      controls.teleport(p, l, "walk");
+    },
+    night: () => night,
+  };
+  const cities = CITY_DEFS.map((def, i) => {
+    const heading = [0.35, -0.6, 0.15, 0.9, -0.25][i] ?? 0;
+    const c = new City(def, cityDirs[i], cityGrounds[i], heading, hooks);
+    terrain.addFlatZone(cityDirs[i], c.baseRadius + 40, c.baseRadius + 900, cityGrounds[i] - 0.05);
+    return c;
+  });
+  wonderDirs.forEach((d, i) => terrain.addFlatZone(d, wonders[i].footprint.inner, wonders[i].footprint.outer, wonderGrounds[i]));
+  const capital = cities[0];
+  cities.forEach((c) => scene.add(c.anchor.object));
+
+  boot.textContent = "正在生成首都 风岚城 …";
+  await new Promise((r) => setTimeout(r, 0));
+  capital.buildNow();
+
+  // ------------------------------------------------------------ 首都广场的 HTML 商铺
+  const PLAZA_LIFT = 0.17; // 广场铺装顶面 0.15 m,商铺地面略高一点
+  const plaza = createShopPlaza(capDir, cityGrounds[0] + PLAZA_LIFT, capital.anchor.heading);
+  scene.add(plaza.anchor.object);
+  for (const s of plaza.shops) {
+    capital.addCollider(s.x, s.z, SHOP_SIZE.w / 2, SHOP_SIZE.d / 2, s.rot, SHOP_SIZE.h);
+    const front = SHOP_SIZE.d / 2 + 1.4;
+    const p = new THREE.Vector3(s.x + Math.sin(s.rot) * front, 1.6 + PLAZA_LIFT, s.z + Math.cos(s.rot) * front);
+    const def = s.shop.def;
+    capital.addSpecial(p, 4.5, () => `进入「${def.name}」`, () => {
+      openOverlay(def.html, PAGE_CSS, PAGE_WIDTH, PAGE_HEIGHT, def.onTick);
+    });
+  }
+  capital.addCollider(0, 0, 4.6, 4.6, 0, 1.0);
+
+  // ------------------------------------------------------------ 行星与奇观
   const planet = new Planet(terrain);
   scene.add(planet.group);
-
-  const plaza = createShopPlaza(plazaDir, plazaGround, 0.4);
-  scene.add(plaza.anchor.object);
 
   const wonderAnchors = wonders.map((w, i) => {
     const a = new Anchor(wonderDirs[i], wonderGrounds[i], i * 1.3);
     a.object.add(w.group);
+    w.group.traverse((o) => (o.castShadow = true));
     scene.add(a.object);
     return a;
   });
 
   // ------------------------------------------------------------ 天空 / 光照
-  const sun = new THREE.DirectionalLight(0xfff1dc, 3.4);
-  scene.add(sun);
-  const ambient = new THREE.AmbientLight(0x8aa4cc, 0.3);
+  const sun = new THREE.DirectionalLight(0xfff1dc, 3.0);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera;
+  sc.left = -140;
+  sc.right = 140;
+  sc.top = 140;
+  sc.bottom = -140;
+  sc.near = 10;
+  sc.far = 1600;
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.04;
+  scene.add(sun, sun.target);
+  const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x6a5a40, 0.9);
+  scene.add(hemi);
+  const ambient = new THREE.AmbientLight(0x8aa4cc, 0.05);
   scene.add(ambient);
   const sunDir = new THREE.Vector3();
-  const sunPhase0 = Math.atan2(plazaDir.z, plazaDir.x);
+  // ?time=0..1:一天中的时刻(0 = 首都正午, 0.5 = 午夜)
+  const time0 = Number(params.get("time") ?? "0.92");
+  let timeOffset = (Number.isFinite(time0) ? time0 : 0.92) * Math.PI * 2;
+  const sunPhase0 = Math.atan2(capDir.z, capDir.x);
 
   const halo = new THREE.Mesh(
     new THREE.SphereGeometry(PLANET_RADIUS * 1.02, 96, 48),
-    new THREE.MeshBasicMaterial({
-      color: 0x5aa0ff,
-      transparent: true,
-      opacity: 0.3,
-      side: THREE.BackSide,
-      depthWrite: false,
-    }),
+    new THREE.MeshBasicMaterial({ color: 0x5aa0ff, transparent: true, opacity: 0.3, side: THREE.BackSide, depthWrite: false }),
   );
+  halo.material.fog = false;
   halo.renderOrder = 2;
   scene.add(halo);
 
@@ -133,42 +225,82 @@ async function main() {
   }
   const starGeo = new THREE.BufferGeometry();
   starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
-  const starMat = new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: 2,
-    sizeAttenuation: false,
-    transparent: true,
-    depthWrite: false,
-  });
+  const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 2, sizeAttenuation: false, transparent: true, depthWrite: false });
+  starMat.fog = false;
   const stars = new THREE.Points(starGeo, starMat);
   stars.frustumCulled = false;
   scene.add(stars);
 
-  // ------------------------------------------------------------ 相机 / 书签
-  const input = new Input(renderer.domElement);
-  const controls = new FlyControls(planet);
+  // ------------------------------------------------------------ 物理:城市内按建筑碰撞,野外按地形
+  const L = new THREE.Vector3();
+  const T = new THREE.Vector3();
+  const cityAt = (pos: THREE.Vector3): City | null => {
+    for (const c of cities) {
+      if (c.state !== "ready") continue;
+      if (pos.distanceTo(c.anchor.pos) > c.baseRadius + 4000) continue;
+      c.toLocal(pos, L);
+      if (Math.hypot(L.x, L.z) < c.baseRadius && L.y < 4000) return c;
+    }
+    return null;
+  };
+  const physics: PhysicsWorld = {
+    resolve(pos, eye, radius, step) {
+      const city = cityAt(pos);
+      if (city) {
+        city.toLocal(pos, L);
+        const g = city.collide(L, radius, eye, step);
+        let feet = L.y - eye;
+        if (feet < g) {
+          L.y = g + eye;
+          feet = g;
+        }
+        city.toPlanet(L, pos);
+        return { clearance: feet - g };
+      }
+      const up = T.copy(pos).normalize();
+      const gh = R + Math.max(0, planet.heightAt(up));
+      if (pos.length() - eye < gh) pos.setLength(gh + eye);
+      return { clearance: Math.max(0, pos.length() - eye - gh) };
+    },
+    drop(pos, eye) {
+      const city = cityAt(pos);
+      if (city) {
+        city.toLocal(pos, L);
+        L.y = city.groundAt(L.x, L.z, Infinity) + eye;
+        city.toPlanet(L, pos);
+        return;
+      }
+      const up = T.copy(pos).normalize();
+      pos.setLength(R + Math.max(0, planet.heightAt(up)) + eye);
+    },
+  };
 
-  const plazaUp = plaza.anchor.up;
-  const plazaTan = tangentAt(plazaUp);
-  const pois: Poi[] = [
-    {
-      name: "轨道 / Orbit",
-      target: new THREE.Vector3(0, 0, 0),
-      viewPos: plazaDir.clone().multiplyScalar(PLANET_RADIUS * 2.6),
-    },
-    {
-      name: "商铺广场 / Shop Plaza",
-      target: plaza.anchor.pos.clone().addScaledVector(plazaUp, 3),
-      viewPos: plaza.anchor.pos.clone().addScaledVector(plazaUp, 32).addScaledVector(plazaTan, 78),
-    },
-  ];
+  // ------------------------------------------------------------ 玩家 / 书签
+  const input = new Input(renderer.domElement);
+  controls.world = physics;
+
+  const pois: Poi[] = [];
+  const addCityPoi = (c: City, kind: "street" | "aerial") => {
+    const v = kind === "street" ? c.streetView() : c.aerialView();
+    pois.push({
+      name: `${c.name} · ${kind === "street" ? "街头" : "鸟瞰"}`,
+      pos: c.toPlanet(v.pos, new THREE.Vector3()),
+      look: c.toPlanet(v.look, new THREE.Vector3()),
+      mode: kind === "street" ? "walk" : "fly",
+    });
+  };
+  pois.push({ name: "轨道 / Orbit", pos: capDir.clone().multiplyScalar(R * 2.6), look: new THREE.Vector3(), mode: "fly" });
+  addCityPoi(capital, "aerial");
+  addCityPoi(capital, "street");
+  for (const c of cities.slice(1)) addCityPoi(c, "aerial");
   wonders.forEach((w, i) => {
     const a = wonderAnchors[i];
     const t = tangentAt(a.up);
     pois.push({
       name: w.name,
-      target: a.pos.clone().addScaledVector(a.up, w.view.height * 0.7),
-      viewPos: a.pos.clone().addScaledVector(a.up, w.view.height).addScaledVector(t, w.view.back),
+      look: a.pos.clone().addScaledVector(a.up, w.view.height * 0.7),
+      pos: a.pos.clone().addScaledVector(a.up, w.view.height).addScaledVector(t, w.view.back),
+      mode: "fly",
     });
   });
 
@@ -176,9 +308,11 @@ async function main() {
   const goto = (i: number) => {
     poiIndex = ((i % pois.length) + pois.length) % pois.length;
     const p = pois[poiIndex];
-    controls.teleport(p.viewPos, p.target);
+    controls.teleport(p.pos, p.look, p.mode);
+    toast(`传送:${p.name}`, 1800);
   };
-  goto(0);
+  const startPoi = Number(params.get("poi") ?? "2") - 1;
+  goto(Number.isFinite(startPoi) ? startPoi : 1);
 
   // ------------------------------------------------------------ 主循环
   window.addEventListener("resize", () => {
@@ -188,91 +322,143 @@ async function main() {
   });
 
   const camDir = new THREE.Vector3();
+  const localP = new THREE.Vector3();
+  const localF = new THREE.Vector3();
   let last = performance.now();
   let hudTimer = 0;
   let fps = 60;
-  let padName = "";
 
-  renderer.setAnimationLoop((nowMs: number) => {
+  renderer.setAnimationLoop(() => {
+    // 用 performance.now() 而不是回调参数:某些环境(无头浏览器、后台标签)回调时间戳与真实时间不一致
+    const nowMs = performance.now();
     const dt = Math.min(0.1, Math.max(0.0001, (nowMs - last) / 1000));
     last = nowMs;
     fps += (1 / dt - fps) * 0.05;
     const t = nowMs / 1000;
 
-    // 输入
+    // ---- 输入
     const pad = input.poll();
-    padName = pad.connected ? pad.id.slice(0, 40) : "";
+    let interact = pad.pressed.includes(0);
+    let toggleMode = pad.pressed.includes(9);
     for (const code of input.consumeKeyPresses()) {
       const m = /^Digit(\d)$/.exec(code);
       if (m) {
-        const idx = Number(m[1]) - 1;
-        if (idx >= 0 && idx < pois.length) goto(idx);
-      } else if (code === "KeyL") {
-        controls.levelHorizon();
-      }
-    }
-    // 十字键和 L3/R3 已被飞行逻辑占用(与 protea 一致),书签放在功能键上
-    for (const b of pad.pressed) {
-      if (b === 3) goto(poiIndex + 1); // Y / △:下一个
-      else if (b === 2) goto(poiIndex - 1); // X / □:上一个
-      else if (b === 8) goto(0); // Select:回到轨道
+        const idx = m[1] === "0" ? 9 : Number(m[1]) - 1;
+        if (idx < pois.length) goto(idx);
+      } else if (code === "KeyL") controls.levelHorizon();
+      else if (code === "KeyF" || code === "Enter") interact = true;
+      else if (code === "KeyG") toggleMode = true;
+      else if (code === "KeyH") help.classList.toggle("hidden");
+      else if (code === "KeyT") {
+        timeOffset += Math.PI / 4;
+        toast("时间快进 3 小时", 1200);
+      } else if (code === "Escape" && isOverlayOpen()) closeOverlay();
     }
 
-    controls.update(dt, input, pad);
+    if (isOverlayOpen()) {
+      if (pad.pressed.includes(1)) closeOverlay();
+      interact = false;
+      toggleMode = false;
+    } else {
+      for (const b of pad.pressed) {
+        if (b === 3) goto(poiIndex + 1); // Y / △
+        else if (b === 2) goto(poiIndex - 1); // X / □
+        else if (b === 8) goto(0); // Select
+      }
+      if (toggleMode) {
+        controls.setMode(controls.mode === "fly" ? "walk" : "fly");
+        toast(controls.mode === "walk" ? "步行模式:左摇杆移动,B 跳跃" : "飞行模式", 1600);
+      }
+      controls.update(dt, input, pad);
+    }
     controls.applyTo(camera);
     const cam = controls.pos;
 
-    // 世界(浮动原点:全部相对相机摆放)
+    // ---- 昼夜
+    const a = sunPhase0 + timeOffset + (t / DAY_LENGTH_SECONDS) * Math.PI * 2;
+    sunDir.set(Math.cos(a) * 0.93, 0.37, Math.sin(a) * 0.93).normalize();
+    camDir.copy(cam).normalize();
+    const sunUp = camDir.dot(sunDir);
+    const day = smooth(-0.12, 0.25, sunUp);
+    night = 1 - day;
+    uNight.value = night;
+
+    // ---- 世界(浮动原点:全部相对相机摆放)
     planet.update(cam);
     plaza.anchor.update(cam);
     plaza.update(cam, nowMs);
+    let nearest: City = capital;
+    let nearestDist = Infinity;
+    for (const c of cities) {
+      const d = c.update(cam, dt, t, night, c === capital ? 4 : 6);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = c;
+      }
+    }
     wonders.forEach((w, i) => {
       w.update?.(t);
       wonderAnchors[i].update(cam);
     });
 
-    // 昼夜
-    const a = sunPhase0 + (t / DAY_LENGTH_SECONDS) * Math.PI * 2;
-    sunDir.set(Math.cos(a) * 0.93, 0.37, Math.sin(a) * 0.93).normalize();
-    sun.position.copy(sunDir).multiplyScalar(1e4);
+    // ---- 交互:在附近城市里找视线前方的可交互物
+    let best: { label: string; score: number; act: () => void } | null = null;
+    if (!isOverlayOpen()) {
+      for (const c of cities) {
+        if (c.state !== "ready" || cam.distanceTo(c.anchor.pos) > c.baseRadius + 200) continue;
+        c.toLocal(cam, localP);
+        c.anchor.dirToLocal(controls.forward, localF);
+        const cand = c.findTarget(localP, localF, controls.mode === "walk" ? 3.2 : 4.5);
+        if (cand && (!best || cand.score < best.score)) best = cand;
+      }
+    }
+    setPrompt(best ? best.label : null, pad.connected);
+    if (interact && best) best.act();
 
-    camDir.copy(cam).normalize();
-    const altitudeAboveSea = cam.length() - PLANET_RADIUS;
-    const day = smooth(-0.12, 0.25, camDir.dot(sunDir));
-    const skyAmount = (1 - smooth(15_000, 120_000, altitudeAboveSea)) * day;
-    background.copy(spaceColor).lerp(skyColor, skyAmount);
-    ambient.intensity = 0.07 + 0.4 * day;
-    starMat.opacity = 1 - skyAmount;
+    // ---- 光照
+    const altitude = cam.length() - PLANET_RADIUS;
+    sun.position.copy(sunDir).multiplyScalar(600);
+    sun.target.position.set(0, 0, 0);
+    sun.intensity = 3.0 * smooth(-0.05, 0.2, sunUp);
+    sun.castShadow = controls.altitude < 1500 && sunUp > 0;
+    hemi.position.copy(camDir);
+    hemi.intensity = 0.15 + 0.85 * day;
+    ambient.intensity = 0.06 + 0.1 * night;
+
+    // 天空色:白天蓝、黄昏偏橙、夜里深蓝;高空渐变成太空黑
+    const dusk = smooth(0.25, 0.0, Math.abs(sunUp - 0.05)) * (1 - night * 0.6);
+    const sky = new THREE.Color().copy(nightSky).lerp(skyColor, day).lerp(duskColor, dusk * 0.55);
+    const skyAmount = 1 - smooth(15_000, 120_000, altitude);
+    background.copy(spaceColor).lerp(sky, skyAmount);
+    fog.color.copy(sky);
+    fog.density = skyAmount > 0.01 ? (1 / (22_000 + altitude * 6)) * skyAmount : 0;
+    starMat.opacity = 1 - skyAmount * day;
 
     halo.position.copy(cam).negate();
-    halo.visible = altitudeAboveSea > 130_000;
-    (halo.material as THREE.MeshBasicMaterial).opacity =
-      0.35 * (0.25 + 0.75 * day) * smooth(130_000, 400_000, altitudeAboveSea);
+    halo.visible = altitude > 130_000;
+    halo.material.opacity = 0.35 * (0.25 + 0.75 * day) * smooth(130_000, 400_000, altitude);
 
     renderer.render(scene, camera);
 
-    // HUD
+    // ---- HUD
     hudTimer += dt;
     if (hudTimer > 0.15) {
       hudTimer = 0;
-      let nearest = pois[0];
-      let nd = Infinity;
-      for (const p of pois.slice(1)) {
-        const d = cam.distanceTo(p.target);
-        if (d < nd) {
-          nd = d;
-          nearest = p;
-        }
-      }
       const s = planet.stats;
+      const cs = nearest.stats;
+      const hours = ((((a - sunPhase0) / (Math.PI * 2)) * 24 + 12) % 24 + 24) % 24;
+      const status =
+        nearest.state === "ready" ? `${cs.lots} 栋建筑 · ${cs.npcs} 位行人 · 宝箱 ${cs.opened}/${cs.chests}` : `生成中 ${(nearest.progress * 100).toFixed(0)}%`;
+      helpMode.textContent = controls.mode === "walk" ? "当前:步行" : `当前:飞行(${controls.padMode === "roll" ? "Roll 模式" : "稳定视角"})`;
       hud.textContent = [
-        `高度 Alt     ${fmtDist(controls.altitude)}`,
-        `速度 Speed   ${fmtDist(controls.speed)}/s  · scale ${controls.scale.toFixed(2)} · roll ${((controls.roll * 180) / Math.PI).toFixed(0)}°`,
-        `最近 Nearest ${nearest.name}  ${fmtDist(nd)}`,
-        `地形块 Chunks ${s.active} 活跃 / ${s.built} 缓存 · LOD ${s.maxLevel}/${MAX_LEVEL}`,
+        `模式 Mode    ${controls.mode === "walk" ? "步行 Walk" : "飞行 Fly"}${controls.mode === "fly" ? ` · ${controls.padMode === "roll" ? "Roll" : "Stable"} · scale ${controls.scale.toFixed(2)}` : ""}`,
+        `离地 Alt     ${fmtDist(controls.altitude)}  · 速度 ${fmtDist(controls.speed)}/s`,
+        `城市 City    ${nearest.name} ${fmtDist(nearestDist)} · ${status}`,
+        `时间 Time    ${String(Math.floor(hours)).padStart(2, "0")}:${String(Math.floor((hours % 1) * 60)).padStart(2, "0")} (T 快进) · 摩拉 ${mora}`,
+        `地形块 Chunks ${s.active} / ${s.built} · LOD ${s.maxLevel}/${MAX_LEVEL}`,
         `渲染 Backend ${backendName} · ${fps.toFixed(0)} fps`,
         `HTML-in-Canvas ${HTML_IN_CANVAS_NATIVE ? "native" : "SVG fallback"} · 活跃页面 ${plaza.activeCount()}/${plaza.shops.length}`,
-        `手柄 Gamepad ${padName || "未连接(按任意键唤醒)"} · 模式 ${controls.mode === "roll" ? "Roll (R3→L3 退出)" : "稳定视角 (R3 进入 Roll)"}`,
+        `手柄 Gamepad ${pad.connected ? pad.id.slice(0, 32) : "未连接(按任意键唤醒)"}`,
         `书签 Bookmark ${poiIndex + 1}/${pois.length} ${pois[poiIndex].name}`,
         `行星 R=${(PLANET_RADIUS / 1000).toFixed(0)}km · 夸张 x${TERRAIN_EXAGGERATION} · 网格 ${GRID}`,
       ].join("\n");
@@ -282,7 +468,21 @@ async function main() {
   boot.classList.add("hidden");
 
   // 调试入口
-  (window as unknown as Record<string, unknown>).world = { renderer, scene, camera, planet, controls, pois, goto, plaza };
+  (window as unknown as Record<string, unknown>).world = {
+    renderer,
+    scene,
+    camera,
+    planet,
+    controls,
+    pois,
+    goto,
+    plaza,
+    cities,
+    setTime: (v: number) => {
+      timeOffset = v * Math.PI * 2 - (performance.now() / 1000 / DAY_LENGTH_SECONDS) * Math.PI * 2;
+    },
+    EYE_HEIGHT,
+  };
 }
 
 main().catch((err) => {

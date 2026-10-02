@@ -34,7 +34,7 @@ function signTexture(def: ShopDef): THREE.CanvasTexture {
  * 一间商铺:建筑 + 常亮的招牌 + 可开关的"HTML 屏幕"。
  * 近处(< ACTIVATE)屏幕显示实时渲染的 HTML 页面;远处隐藏页面,只留一块熄灭的屏幕。
  */
-class Shop {
+export class Shop {
   readonly group = new THREE.Group();
   readonly html: HtmlTexture;
   private readonly screenOn: THREE.Mesh;
@@ -97,24 +97,37 @@ class Shop {
   }
 }
 
+export interface PlazaShop {
+  shop: Shop;
+  /** 商铺中心(行星坐标) */
+  worldPos: THREE.Vector3;
+  /** 商铺在广场本地坐标中的位置与朝向(正门朝本地 +Z 旋转 rot 后的方向) */
+  x: number;
+  z: number;
+  rot: number;
+}
+
 export interface ShopPlaza {
   anchor: Anchor;
-  shops: { shop: Shop; worldPos: THREE.Vector3 }[];
+  shops: PlazaShop[];
   /** 每帧调用:按到相机的距离开关各家商铺的 HTML 页面。 */
   update(cam: THREE.Vector3, nowMs: number): void;
   readonly htmlMode: string;
   readonly activeCount: () => number;
 }
 
-/** 广场:地面圆盘、喷泉、路灯,以及 3 间围成弧形的商铺。 */
-export function createShopPlaza(dir: THREE.Vector3, groundHeight: number, heading: number): ShopPlaza {
-  const anchor = new Anchor(dir, groundHeight + 0.12, heading);
+/** 商铺建筑尺寸(碰撞用) */
+export const SHOP_SIZE = { w: 9, d: 7, h: 7 };
+
+/**
+ * 广场:地面圆盘、喷泉、路灯,以及围成弧形的商铺。
+ * @param height 广场地面的海拔(米)
+ */
+export function createShopPlaza(dir: THREE.Vector3, height: number, heading: number): ShopPlaza {
+  const anchor = new Anchor(dir, height, heading);
   const g = anchor.object;
 
-  const floor = new THREE.Mesh(new THREE.CircleGeometry(46, 64), lit(0x9a9486, { roughness: 0.95 }));
-  floor.rotation.x = -Math.PI / 2;
-  g.add(floor);
-
+  // 地面由城市广场的石板铺装提供,这里只放喷泉、路灯和商铺
   const fountainBase = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.6, 0.9, 24), lit(0x8d8a82));
   fountainBase.position.y = 0.45;
   g.add(fountainBase);
@@ -144,17 +157,12 @@ export function createShopPlaza(dir: THREE.Vector3, groundHeight: number, headin
     const theta = (k - (SHOPS.length - 1) / 2) * 0.72;
     const x = Math.sin(theta) * 28;
     const z = -Math.cos(theta) * 28;
+    const rot = Math.atan2(-x, -z);
     shop.group.position.set(x, 0, z);
-    shop.group.rotation.y = Math.atan2(-x, -z);
+    shop.group.rotation.y = rot;
     g.add(shop.group);
-
-    // 商铺的行星坐标(用于距离判断):先让锚点更新一次矩阵再取世界位置会依赖相机,
-    // 这里直接用锚点的本地→行星变换手算。
-    const local = new THREE.Vector3(x, 0, z);
-    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), anchor.up);
-    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading));
-    const worldPos = local.applyQuaternion(q).add(anchor.pos);
-    shops.push({ shop, worldPos });
+    const worldPos = anchor.toPlanet(new THREE.Vector3(x, 0, z), new THREE.Vector3());
+    shops.push({ shop, worldPos, x, z, rot });
   });
 
   return {

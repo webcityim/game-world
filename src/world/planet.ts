@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { color, mix, positionLocal, sin, time } from "three/tsl";
+import { color, mix, sin, time } from "three/tsl";
 import { BUILD_BUDGET_MS, GRID, MAX_LEVEL, PLANET_RADIUS, SPLIT_FACTOR } from "../config";
 import { Terrain, type RGB } from "./terrain";
 
@@ -87,25 +87,24 @@ export class Planet {
   constructor(terrain: Terrain) {
     this.terrain = terrain;
 
+    // 单面渲染:之前用 DoubleSide 时,裙边的背面法线被翻转,在地面上显示成一条条黑线
     this.landMaterial = new THREE.MeshStandardNodeMaterial({
       vertexColors: true,
       roughness: 0.96,
       metalness: 0,
-      side: THREE.DoubleSide,
     });
 
-    // TSL 小动画:水色随时间在两种蓝之间缓慢起伏
+    // 水色随时间在两种蓝之间缓慢起伏。
+    // 注意不能用块内坐标(positionLocal,数值可达上百万米)做正弦,float32 下会出现摩尔纹。
     this.waterMaterial = new THREE.MeshStandardNodeMaterial({
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.88,
       roughness: 0.12,
       metalness: 0.05,
       depthWrite: false,
     });
-    const shimmer = sin(time.mul(0.6).add(positionLocal.x.mul(0.01)).add(positionLocal.z.mul(0.013)))
-      .mul(0.5)
-      .add(0.5);
-    this.waterMaterial.colorNode = mix(color(0x15508f), color(0x2a8fd6), shimmer);
+    const shimmer = sin(time.mul(0.35)).mul(0.5).add(0.5);
+    this.waterMaterial.colorNode = mix(color(0x154f8a), color(0x1f6fb0), shimmer);
 
     for (let f = 0; f < 6; f++) {
       const root = this.makeNode(f, 0, 0, 0);
@@ -383,7 +382,9 @@ export class Planet {
         const e1 = edgeVertex(e, k + 1);
         const s0 = mainCount + e * W + k;
         const s1 = s0 + 1;
+        // 裙边两面都画(材质是单面的),从哪一侧看都不会露缝
         idx.push(e0, s0, e1, e1, s0, s1);
+        idx.push(e0, e1, s0, e1, s1, s0);
       }
     }
 
@@ -395,6 +396,7 @@ export class Planet {
     geo.computeBoundingSphere();
 
     const land = new THREE.Mesh(geo, this.landMaterial);
+    land.receiveShadow = true;
     land.visible = false;
     this.group.add(land);
     node.land = land;

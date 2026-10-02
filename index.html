@@ -9,10 +9,21 @@
     <div id="app"></div>
 
     <div id="hud" aria-live="off"></div>
+    <div id="crosshair"></div>
+    <div id="prompt"></div>
+    <div id="toast"></div>
     <div id="help">
-      <b>操作</b><br />
-      手柄(同 protea):右摇杆平移 · 左摇杆 前后/偏航 · 十字键 俯仰/翻滚 · L1/R1 加速 · L2/R2 缩放 · R3 切到 Roll 模式(十字键平移、右摇杆转向、左摇杆翻滚),L3 退出 · A 回正 · Y/X 切换书签<br />
-      键鼠:拖动鼠标视角 · WASD 移动 · Space/C 升/降 · Q/E 翻滚 · L 回正 · Shift 加速 · Z 减速 · 滚轮缩放 · 1-6 书签
+      <b>操作</b> · <span id="help-mode"></span><br />
+      手柄 · 飞行(同 protea):右摇杆平移 · 左摇杆 前后/偏航 · 十字键 俯仰/翻滚 · L1/R1 加速 · L2/R2 缩放 · R3/L3 切换 Roll 模式 · B 回正<br />
+      手柄 · 步行:左摇杆移动 · 右摇杆视角 · L1/R1 奔跑 · B 跳跃<br />
+      手柄 · 通用:<b>Start 切换飞行/步行</b> · <b>A 交互</b> · Y/X 切换书签 · Select 回到轨道<br />
+      键鼠:拖动鼠标视角 · WASD 移动 · Space 上升/跳跃 · C 下降 · Shift 加速 · <b>G 飞行/步行</b> · <b>F 交互</b> · Q/E 翻滚 · L 回正 · 1-9/0 书签 · H 隐藏说明
+    </div>
+    <div id="overlay">
+      <div id="overlay-frame">
+        <div id="overlay-page"></div>
+        <div id="overlay-hint">B / Esc / 点击空白处 关闭</div>
+      </div>
     </div>
     <div id="boot">正在初始化 WebGPU …</div>
 
