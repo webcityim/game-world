@@ -447,7 +447,10 @@ async function main() {
     sun.position.copy(sunDir).multiplyScalar(600);
     sun.target.position.set(0, 0, 0);
     sun.intensity = 3.0 * smooth(-0.05, 0.2, sunUp);
-    sun.castShadow = controls.altitude < 1500 && sunUp > 0;
+    // 不要在运行时切换 sun.castShadow:three 的节点光照会按它重建 / 初始化阴影贴图,
+    // 中途打开会在 WebGPU 下抛 "Cannot read properties of null (reading 'depthTexture')"。
+    // 改为暂停阴影贴图的更新(省掉高空和夜里的渲染开销)。
+    sun.shadow.autoUpdate = controls.altitude < 1500 && sunUp > 0;
     hemi.position.copy(camDir);
     hemi.intensity = 0.15 + 0.85 * day;
     ambient.intensity = 0.06 + 0.1 * night;
