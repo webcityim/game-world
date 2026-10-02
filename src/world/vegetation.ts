@@ -352,6 +352,7 @@ export class Vegetation {
       for (let k = 0; k < tuftCandidates; k++) {
         const smp = sampleAt();
         if (!smp || smp.hn < 14 || smp.slope > 0.22) continue;
+        if (smp.biome > 0.5 && rand() < 0.85) continue; // 沙漠里草很稀
         const snow = Math.min(1, Math.max(0, (smp.hn - 2500) / 600)) + (Math.abs(smp.ny) > 0.9 ? 1 : 0);
         if (snow > 0.5) continue;
         // 林下草少一点,草原多一点
