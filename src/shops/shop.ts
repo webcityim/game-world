@@ -141,9 +141,9 @@ export function createShopPlaza(dir: THREE.Vector3, groundHeight: number, headin
   const shops: ShopPlaza["shops"] = [];
   SHOPS.forEach((def, k) => {
     const shop = new Shop(def);
-    const theta = (k - (SHOPS.length - 1) / 2) * 0.95;
-    const x = Math.sin(theta) * 25;
-    const z = -Math.cos(theta) * 25;
+    const theta = (k - (SHOPS.length - 1) / 2) * 0.72;
+    const x = Math.sin(theta) * 28;
+    const z = -Math.cos(theta) * 28;
     shop.group.position.set(x, 0, z);
     shop.group.rotation.y = Math.atan2(-x, -z);
     g.add(shop.group);

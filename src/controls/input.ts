@@ -1,30 +1,59 @@
-// 键盘 / 鼠标 / 手柄输入汇总。手柄使用标准映射(Xbox / PS / Switch Pro 等):
-//   左摇杆 = 移动,右摇杆 = 视角,RT/LT = 上升/下降,RB = 加速,LB = 减速,
-//   Y 或 十字键右 = 下一个书签,十字键左 = 上一个书签。
+// 键盘 / 鼠标 / 手柄输入汇总。
+//
+// 手柄逻辑参考 WebGPU-Art/protea 的 src/gamepad.ts + src/control.mts:
+// 直接暴露四个摇杆轴和全部标准按钮(含 L3/R3、十字键),
+// 由 FlyControls 按"稳定视角 / Roll 模式"两套映射解释。
+
+export interface PadAxes {
+  leftX: number;
+  leftY: number;
+  rightX: number;
+  rightY: number;
+}
 
 export interface PadState {
   connected: boolean;
   id: string;
-  moveX: number;
-  moveY: number; // 向前为正
-  lookX: number;
-  lookY: number; // 抬头为正
-  rise: number;
-  fall: number;
-  boost: number;
-  slow: number;
-  /** 本帧刚按下的按钮编号 */
+  axes: PadAxes;
+  /** 按钮的模拟值 0..1 */
+  l1: number;
+  r1: number;
+  l2: number;
+  r2: number;
+  l3: number;
+  r3: number;
+  up: number;
+  down: number;
+  left: number;
+  right: number;
+  /** 本帧刚按下的按钮编号(标准映射:0=A/×,1=B/○,2=X/□,3=Y/△,8=Select,9=Start) */
   pressed: number[];
 }
 
-const DEADZONE = 0.14;
+/** 摇杆死区。protea 默认 0.016,多数手柄会漂移,所以默认更大;可用 ?threshold= 覆盖。 */
+export const GAMEPAD_THRESHOLD = (() => {
+  const raw = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("threshold");
+  const v = raw === null ? NaN : Number(raw);
+  return Number.isFinite(v) ? v : 0.08;
+})();
 
-/** 去死区 + 立方曲线:小幅度精细、大幅度快速。 */
-function shape(v: number): number {
-  const a = Math.abs(v);
-  if (a < DEADZONE) return 0;
-  const t = (a - DEADZONE) / (1 - DEADZONE);
-  return Math.sign(v) * (0.35 * t + 0.65 * t * t * t);
+export function emptyPad(): PadState {
+  return {
+    connected: false,
+    id: "",
+    axes: { leftX: 0, leftY: 0, rightX: 0, rightY: 0 },
+    l1: 0,
+    r1: 0,
+    l2: 0,
+    r2: 0,
+    l3: 0,
+    r3: 0,
+    up: 0,
+    down: 0,
+    left: 0,
+    right: 0,
+    pressed: [],
+  };
 }
 
 export class Input {
@@ -94,23 +123,9 @@ export class Input {
   }
 
   poll(): PadState {
-    const empty: PadState = {
-      connected: false,
-      id: "",
-      moveX: 0,
-      moveY: 0,
-      lookX: 0,
-      lookY: 0,
-      rise: 0,
-      fall: 0,
-      boost: 0,
-      slow: 0,
-      pressed: [],
-    };
-    if (typeof navigator === "undefined" || !navigator.getGamepads) return empty;
-    const pads = navigator.getGamepads();
+    if (typeof navigator === "undefined" || !navigator.getGamepads) return emptyPad();
     let pad: Gamepad | null = null;
-    for (const p of pads) {
+    for (const p of navigator.getGamepads()) {
       if (p && p.connected) {
         pad = p;
         break;
@@ -118,7 +133,7 @@ export class Input {
     }
     if (!pad) {
       this.prevButtons = [];
-      return empty;
+      return emptyPad();
     }
 
     const pressed: number[] = [];
@@ -133,14 +148,17 @@ export class Input {
     return {
       connected: true,
       id: pad.id,
-      moveX: shape(axis(0)),
-      moveY: -shape(axis(1)),
-      lookX: shape(axis(2)),
-      lookY: -shape(axis(3)),
-      rise: btn(7),
-      fall: btn(6),
-      boost: btn(5),
-      slow: btn(4),
+      axes: { leftX: axis(0), leftY: axis(1), rightX: axis(2), rightY: axis(3) },
+      l1: btn(4),
+      r1: btn(5),
+      l2: btn(6),
+      r2: btn(7),
+      l3: btn(10),
+      r3: btn(11),
+      up: btn(12),
+      down: btn(13),
+      left: btn(14),
+      right: btn(15),
       pressed,
     };
   }

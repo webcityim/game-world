@@ -17,14 +17,32 @@ yarn typecheck
 
 ## 操作
 
-| 输入 | 动作 |
+手柄逻辑移植自 [WebGPU-Art/protea](https://github.com/WebGPU-Art/protea)(`src/gamepad.ts` + `src/control.mts`),
+两种模式,按 **R3** 进入 Roll 模式,**L3** 回到稳定视角:
+
+| 手柄 | 稳定视角(默认) | Roll 模式 |
+| --- | --- | --- |
+| 右摇杆 | 左右 / 上下平移 | 偏航 / 俯仰 |
+| 左摇杆 Y | 前后 | 前后 |
+| 左摇杆 X | 偏航 | 翻滚 |
+| 十字键 ↑↓ | 俯仰 | 上下平移 |
+| 十字键 ←→ | 翻滚 | 左右平移 |
+| L1 / R1 | 加速(平移 ×8,旋转 ×4) | 同左 |
+| L2 / R2 | scale 增大 / 减小(速度 ∝ 1/scale) | 同左 |
+| A | 翻滚回正 | 同左 |
+| Y / X / Select | 下一个 / 上一个书签 / 回到轨道 | 同左 |
+
+和 protea 的差异:protea 是自由 6 自由度相机,这里"上"始终是行星法线,所以多了一个 A 键回正翻滚;
+摇杆死区默认 0.08(protea 是 0.016,多数手柄会漂移),可用 `?threshold=0.016` 改回去。
+
+| 键鼠 | 动作 |
 | --- | --- |
-| 手柄左摇杆 / 右摇杆 | 移动 / 视角 |
-| RT / LT | 上升 / 下降 |
-| RB / LB | 加速 / 减速 |
-| Y 或十字键右 / 十字键左 | 下一个 / 上一个书签 |
-| 鼠标拖动 / WASD / Space,C / Shift / Z / 滚轮 | 视角 / 移动 / 升降 / 加速 / 减速 / 调速 |
-| 数字键 1-6 | 直接传送到书签(轨道、商铺广场、4 个奇观) |
+| 拖动鼠标 / 方向键 | 视角 |
+| WASD / Space,C | 移动 / 升降 |
+| Q,E / L | 翻滚 / 回正 |
+| Shift / Z / 滚轮 | 加速 / 减速 / 缩放 |
+| 数字键 1-6 | 传送到书签(轨道、商铺广场、4 个奇观) |
+
 
 ## 结构
 
@@ -43,7 +61,8 @@ src/
     wonders.ts         奇观:世界树、浮空岛、水晶尖塔、天环
   shops/
     htmlTexture.ts     HTML in Canvas(原生 drawElementImage / SVG foreignObject 兜底)
-    pages.ts           商铺页面(真实 HTML+CSS)
+    patterns.ts        生成式图案 SVG:Clifford / Lorenz / Rule 30 / 内摆线
+    pages.ts           商铺页面(真实 HTML+CSS,内嵌实时重绘的图案)
     shop.ts            商铺建筑、广场、按距离开关页面
 ```
 

@@ -201,17 +201,21 @@ async function main() {
 
     // 输入
     const pad = input.poll();
-    padName = pad.connected ? pad.id : "";
+    padName = pad.connected ? pad.id.slice(0, 40) : "";
     for (const code of input.consumeKeyPresses()) {
       const m = /^Digit(\d)$/.exec(code);
       if (m) {
         const idx = Number(m[1]) - 1;
         if (idx >= 0 && idx < pois.length) goto(idx);
+      } else if (code === "KeyL") {
+        controls.levelHorizon();
       }
     }
+    // 十字键和 L3/R3 已被飞行逻辑占用(与 protea 一致),书签放在功能键上
     for (const b of pad.pressed) {
-      if (b === 3 || b === 15) goto(poiIndex + 1);
-      else if (b === 14) goto(poiIndex - 1);
+      if (b === 3) goto(poiIndex + 1); // Y / △:下一个
+      else if (b === 2) goto(poiIndex - 1); // X / □:上一个
+      else if (b === 8) goto(0); // Select:回到轨道
     }
 
     controls.update(dt, input, pad);
@@ -263,12 +267,12 @@ async function main() {
       const s = planet.stats;
       hud.textContent = [
         `高度 Alt     ${fmtDist(controls.altitude)}`,
-        `速度 Speed   ${fmtDist(controls.speed)}/s  (x${controls.speedMul.toFixed(2)})`,
+        `速度 Speed   ${fmtDist(controls.speed)}/s  · scale ${controls.scale.toFixed(2)} · roll ${((controls.roll * 180) / Math.PI).toFixed(0)}°`,
         `最近 Nearest ${nearest.name}  ${fmtDist(nd)}`,
         `地形块 Chunks ${s.active} 活跃 / ${s.built} 缓存 · LOD ${s.maxLevel}/${MAX_LEVEL}`,
         `渲染 Backend ${backendName} · ${fps.toFixed(0)} fps`,
         `HTML-in-Canvas ${HTML_IN_CANVAS_NATIVE ? "native" : "SVG fallback"} · 活跃页面 ${plaza.activeCount()}/${plaza.shops.length}`,
-        `手柄 Gamepad ${padName || "未连接(按任意键唤醒)"}`,
+        `手柄 Gamepad ${padName || "未连接(按任意键唤醒)"} · 模式 ${controls.mode === "roll" ? "Roll (R3→L3 退出)" : "稳定视角 (R3 进入 Roll)"}`,
         `书签 Bookmark ${poiIndex + 1}/${pois.length} ${pois[poiIndex].name}`,
         `行星 R=${(PLANET_RADIUS / 1000).toFixed(0)}km · 夸张 x${TERRAIN_EXAGGERATION} · 网格 ${GRID}`,
       ].join("\n");
