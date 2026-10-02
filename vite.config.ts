@@ -8,7 +8,7 @@ export default defineConfig({
   base,
   build: {
     target: "es2022",
-    sourcemap: true,
+    sourcemap: false, // three.js 的 sourcemap 有几十 MB,会让 COS 上传变得很慢
     chunkSizeWarningLimit: 2000,
   },
   server: {
