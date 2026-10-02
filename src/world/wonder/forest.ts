@@ -9,12 +9,12 @@ const smooth = (a: number, b: number, x: number) => {
 };
 
 /** 单位石柱(高 1、底半径 1)。非均匀缩放后得到不同粗细高矮的石柱。 */
-function pillarVariant(seed: number): THREE.BufferGeometry {
+function pillarVariant(seed: number, segs = 28, radial = 20): THREE.BufferGeometry {
   const line = new THREE.LineCurve3(new THREE.Vector3(0, -0.05, 0), new THREE.Vector3(0, 1, 0));
   const g = sweep(
     line,
-    72,
-    40,
+    segs,
+    radial,
     (t, th) => {
       const flare = 1 + 0.5 * Math.exp(-t * 9);
       const taper = 1 - 0.2 * t;
@@ -47,7 +47,11 @@ function pillarVariant(seed: number): THREE.BufferGeometry {
 export function createStoneForest(): Wonder {
   const group = new THREE.Group();
   const rand = rngOf(314);
-  const variants = [1, 2, 3, 4, 5, 6, 7, 8].map(pillarVariant);
+  const seeds = [1, 2, 3, 4, 5, 6, 7, 8];
+  const variants = seeds.map((s) => pillarVariant(s, 36, 22));
+  const farVariants = seeds.map((s) => pillarVariant(s, 16, 12));
+  const nearMeshes: THREE.Object3D[] = [];
+  const farMeshes: THREE.Object3D[] = [];
   const mat = vcMat({ roughness: 0.97 });
 
   interface P {
@@ -85,11 +89,18 @@ export function createStoneForest(): Wonder {
     im.computeBoundingSphere();
     im.castShadow = true;
     group.add(im);
+    nearMeshes.push(im);
+    const far = new THREE.InstancedMesh(farVariants[v], mat, list.length);
+    far.instanceMatrix = im.instanceMatrix;
+    far.computeBoundingSphere();
+    far.visible = false;
+    group.add(far);
+    farMeshes.push(far);
   });
 
   // 脚下的碎石
   const rockGeos = [0, 1, 2].map((v) => {
-    const g = displace(new THREE.IcosahedronGeometry(1, 2), 500 + v * 17, 1.8, 0.32, 3);
+    const g = displace(new THREE.IcosahedronGeometry(1, 1), 500 + v * 17, 1.8, 0.32, 3);
     xform(g, S(1, 0.7, 1));
     return paint(g, rockPainter({ a: [0.6, 0.55, 0.47], b: [0.4, 0.36, 0.3], band: 6, seed: 20 + v, moss: [0.2, 0.4, 0.15], mossMin: 0.5 }));
   });
@@ -164,6 +175,11 @@ export function createStoneForest(): Wonder {
     footprint: { inner: 780, outer: 1500 },
     view: { height: 520, back: 2400 },
     detail,
-    detailDistance: 9000,
+    detailDistance: 5000,
+    setDistance: (d) => {
+      const near = d < 3500;
+      for (const o of nearMeshes) o.visible = near;
+      for (const o of farMeshes) o.visible = !near;
+    },
   };
 }

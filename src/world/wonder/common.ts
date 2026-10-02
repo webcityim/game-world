@@ -16,6 +16,8 @@ export interface Wonder {
   /** 到达该奇观时相机离地高度和后退距离 */
   view: { height: number; back: number };
   update?: (t: number) => void;
+  /** 每帧传入相机到奇观的距离,用来切换主体的精细 / 粗糙模型 */
+  setDistance?: (d: number) => void;
   /** 细节层:只有相机离奇观 detailDistance 米以内才显示(远处只画主体轮廓) */
   detail?: THREE.Object3D;
   detailDistance?: number;

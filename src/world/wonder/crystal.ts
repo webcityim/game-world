@@ -132,7 +132,7 @@ export function createCrystalSpire(): Wonder {
     footprint: { inner: 560, outer: 1200 },
     view: { height: 760, back: 2800 },
     detail,
-    detailDistance: 9000,
+    detailDistance: 6500,
     update: (t) => {
       shardRing.rotation.y = t * 0.06;
       core.scale.y = 560 + Math.sin(t * 1.3) * 40;

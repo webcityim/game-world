@@ -92,13 +92,16 @@ export function createWorldTree(): Wonder {
   group.add(new THREE.Mesh(merge(branches), vcMat({ roughness: 1 })));
 
   // ---- 冠层:大团树叶(中模),按枝头分布,多个位移变体
-  const leafVariants = [0, 1, 2].map((v) =>
-    paint(displace(new THREE.IcosahedronGeometry(1, 3), 100 + v * 13, 1.7, 0.28, 4), (x, y, z, _nx, ny) => {
+  const leafVariantAt = (v: number, detail: number) =>
+    paint(displace(new THREE.IcosahedronGeometry(1, detail), 100 + v * 13, 1.7, 0.28, 4), (x, y, z, _nx, ny) => {
       const lit = 0.5 + 0.5 * ny;
       const tip = smooth(0.2, 1, y);
       return [0.1 + 0.18 * tip * lit + 0.04, 0.3 + 0.28 * lit + 0.1 * tip, 0.07 + 0.06 * lit] as RGB3;
-    }),
-  );
+    });
+  const leafVariants = [0, 1, 2].map((v) => leafVariantAt(v, 3));
+  const leafFar = [0, 1, 2].map((v) => leafVariantAt(v, 1));
+  const leafNearMeshes: THREE.Object3D[] = [];
+  const leafFarMeshes: THREE.Object3D[] = [];
   const leafMat = vcMat({ roughness: 0.85, emissive: 0x0e4a1c, emissiveIntensity: 0.35 });
   const canopy = new THREE.Group();
   const perVariant: THREE.Matrix4[][] = [[], [], []];
@@ -125,6 +128,13 @@ export function createWorldTree(): Wonder {
     list.forEach((mm, i) => im.setMatrixAt(i, mm));
     im.computeBoundingSphere();
     canopy.add(im);
+    leafNearMeshes.push(im);
+    const far = new THREE.InstancedMesh(leafFar[v], leafMat, list.length);
+    far.instanceMatrix = im.instanceMatrix;
+    far.computeBoundingSphere();
+    far.visible = false;
+    canopy.add(far);
+    leafFarMeshes.push(far);
   });
   group.add(canopy);
 
@@ -182,7 +192,12 @@ export function createWorldTree(): Wonder {
     footprint: { inner: 520, outer: 1100 },
     view: { height: 1300, back: 4200 },
     detail,
-    detailDistance: 9000,
+    detailDistance: 6500,
+    setDistance: (d) => {
+      const near = d < 6000;
+      for (const o of leafNearMeshes) o.visible = near;
+      for (const o of leafFarMeshes) o.visible = !near;
+    },
     update: (t) => {
       fruitMat.emissiveIntensity = 2.1 + Math.sin(t * 1.4) * 0.5;
     },

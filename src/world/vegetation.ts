@@ -22,6 +22,9 @@ export interface VegChunk {
   group: THREE.Group;
   /** 只在很近时显示的地被(草丛、花、岩石) */
   ground: THREE.Object3D[];
+  /** 级别 15 的块:近处用精细树模型,远一点换成中等精度(同一批实例) */
+  treesHi: THREE.Object3D[];
+  treesMid: THREE.Object3D[];
   dispose(): void;
 }
 
@@ -46,13 +49,20 @@ function blob(r: number, detail: number, seed: number, amp: number): THREE.Buffe
   return displace(new THREE.IcosahedronGeometry(r, detail), seed, 0.7 / r, amp * r, 3);
 }
 
-export function broadleaf(hi: boolean): THREE.BufferGeometry {
+/** tier: 2 = 近(含 true),1 = 中(含 false),0 = 远(几十个三角形) */
+const tierOf = (t: boolean | number) => (t === true ? 2 : t === false ? 1 : t);
+
+export function broadleaf(tierArg: boolean | number): THREE.BufferGeometry {
+  const tier = tierOf(tierArg);
+  const hi = tier >= 2;
   const parts: THREE.BufferGeometry[] = [];
-  const trunk = new THREE.CylinderGeometry(0.17, 0.3, 3.4, hi ? 7 : 5, hi ? 3 : 1);
+  const trunk = new THREE.CylinderGeometry(0.17, 0.3, 3.4, hi ? 6 : 4, 1);
   xform(trunk, T(0, 1.7, 0));
   paint(trunk, (x, y) => [0.3 + 0.05 * Math.sin(y * 7 + x * 9), 0.2, 0.12]);
   parts.push(trunk);
-  const lobes: [number, number, number, number][] = hi
+  const lobes: [number, number, number, number][] = tier === 0
+    ? [[0, 5.0, 0, 3.0]]
+    : hi
     ? [
         [0, 5.2, 0, 2.5],
         [1.4, 4.3, 0.5, 1.8],
@@ -65,7 +75,7 @@ export function broadleaf(hi: boolean): THREE.BufferGeometry {
         [0.9, 4.2, 0.4, 1.8],
       ];
   lobes.forEach(([x, y, z, r], k) => {
-    const g = blob(r, hi ? 2 : 1, 11 + k * 7, 0.22);
+    const g = blob(r, tier === 0 ? 0 : 1, 11 + k * 7, tier === 0 ? 0.1 : 0.22);
     xform(g, T(x, y, z));
     paint(g, (_x, py, _z, nx, ny) => {
       const top = Math.min(1, Math.max(0, (py - 3) / 4));
@@ -77,18 +87,20 @@ export function broadleaf(hi: boolean): THREE.BufferGeometry {
   return merge(parts);
 }
 
-export function conifer(hi: boolean): THREE.BufferGeometry {
+export function conifer(tierArg: boolean | number): THREE.BufferGeometry {
+  const tier = tierOf(tierArg);
+  const hi = tier >= 2;
   const parts: THREE.BufferGeometry[] = [];
-  const trunk = new THREE.CylinderGeometry(0.15, 0.28, 2.2, 5, 1);
+  const trunk = new THREE.CylinderGeometry(0.15, 0.28, 2.2, 4, 1);
   xform(trunk, T(0, 1.1, 0));
   paint(trunk, [0.27, 0.17, 0.1]);
   parts.push(trunk);
-  const tiers = hi ? 6 : 3;
+  const tiers = hi ? 5 : tier === 1 ? 3 : 2;
   for (let k = 0; k < tiers; k++) {
     const t = k / (tiers - 1);
     const r = 2.1 * (1 - t * 0.78);
     const h = 3.0 - t * 0.9;
-    const cone = new THREE.ConeGeometry(r, h, hi ? 9 : 6, 1);
+    const cone = new THREE.ConeGeometry(r, h, hi ? 8 : tier === 1 ? 6 : 5, 1, true);
     xform(cone, T(0, 2.2 + t * (hi ? 7.6 : 7.4) + h * 0.5, 0));
     const g = hi ? displace(cone, 40 + k, 1.2, 0.18, 2) : cone;
     paint(g, (_x, py, _z, nx, ny) => {
@@ -159,10 +171,8 @@ function rock(): THREE.BufferGeometry {
 }
 
 export class Vegetation {
-  private readonly broadHi = broadleaf(true);
-  private readonly broadLo = broadleaf(false);
-  private readonly coniHi = conifer(true);
-  private readonly coniLo = conifer(false);
+  private readonly broad = [broadleaf(0), broadleaf(1), broadleaf(2)];
+  private readonly coni = [conifer(0), conifer(1), conifer(2)];
   private readonly tuftGeo = tuft();
   private readonly bushGeo = bush();
   private readonly flowerGeo = flower();
@@ -210,7 +220,7 @@ export class Vegetation {
 
     // ---- 候选点数量(随层级)
     const hiLevel = level >= VEG_GROUND_LEVEL;
-    const treeCandidates = Math.round((level >= 15 ? 420 : level === 14 ? 640 : 300) * this.density);
+    const treeCandidates = Math.round((level >= 15 ? 360 : level === 14 ? 420 : 220) * this.density);
     const tuftCandidates = hiLevel ? Math.round(520 * this.density) : 0;
     const bushCandidates = hiLevel ? Math.round(70 * this.density) : 0;
     const flowerCandidates = hiLevel ? Math.round(110 * this.density) : 0;
@@ -303,7 +313,7 @@ export class Vegetation {
     const ground: THREE.Object3D[] = [];
     const meshes: THREE.InstancedMesh[] = [];
     const add = (geo: THREE.BufferGeometry, mat: THREE.Material, ms: THREE.Matrix4[], cols: THREE.Color[] | null, cast: boolean, isGround: boolean) => {
-      if (!ms.length) return;
+      if (!ms.length) return null;
       const im = new THREE.InstancedMesh(geo, mat, ms.length);
       for (let k = 0; k < ms.length; k++) {
         im.setMatrixAt(k, ms[k]);
@@ -316,10 +326,24 @@ export class Vegetation {
       group.add(im);
       meshes.push(im);
       if (isGround) ground.push(im);
+      return im;
     };
     const hi = level >= 15;
-    add(hi ? this.broadHi : this.broadLo, this.leafMat, broad, broadCols, hi, false);
-    add(hi ? this.coniHi : this.coniLo, this.leafMat, coni, coniCols, hi, false);
+    const treesHi: THREE.Object3D[] = [];
+    const treesMid: THREE.Object3D[] = [];
+    const tier = hi ? 2 : level === 14 ? 1 : 0;
+    const b = add(this.broad[tier], this.leafMat, broad, broadCols, hi, false);
+    const c = add(this.coni[tier], this.leafMat, coni, coniCols, hi, false);
+    if (b) (hi ? treesHi : treesMid).push(b);
+    if (c) (hi ? treesHi : treesMid).push(c);
+    if (hi) {
+      // 同一批实例再画一份中等精度的,远处切换过去
+      const b1 = add(this.broad[1], this.leafMat, broad, broadCols, false, false);
+      const c1 = add(this.coni[1], this.leafMat, coni, coniCols, false, false);
+      if (b1) treesMid.push(b1);
+      if (c1) treesMid.push(c1);
+      for (const o of treesMid) o.visible = false;
+    }
 
     // ---- 地被(只有最高层级)
     if (hiLevel) {
@@ -380,6 +404,8 @@ export class Vegetation {
     return {
       group,
       ground,
+      treesHi,
+      treesMid,
       dispose() {
         for (const mesh of meshes) mesh.dispose();
       },

@@ -265,6 +265,12 @@ export class Planet {
         // 草丛 / 花 / 岩石只在很近时画
         const near = cam.distanceTo(n.lodCenter) < n.size * 0.5 + 170;
         for (const g of n.veg.ground) g.visible = near;
+        // 精细树只在近处;稍远换中等精度,更远(级别 13/14)本来就是低模
+        if (n.veg.treesHi.length) {
+          const fine = cam.distanceTo(n.lodCenter) < n.size * 0.5 + 420;
+          for (const o of n.veg.treesHi) o.visible = fine;
+          for (const o of n.veg.treesMid) o.visible = !fine;
+        }
       }
     }
 

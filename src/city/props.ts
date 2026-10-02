@@ -368,8 +368,8 @@ export class NpcSet {
     const g = new THREE.Group();
     const n = this.items.length;
     if (n === 0) return g;
-    const bodyGeo = new THREE.CapsuleGeometry(0.26, 0.85, 4, 8).translate(0, 0.26 + 0.425, 0);
-    const headGeo = new THREE.SphereGeometry(0.2, 10, 8).translate(0, 1.6, 0);
+    const bodyGeo = new THREE.CapsuleGeometry(0.26, 0.85, 2, 6).translate(0, 0.26 + 0.425, 0);
+    const headGeo = new THREE.SphereGeometry(0.2, 7, 5).translate(0, 1.6, 0);
     this.body = new THREE.InstancedMesh(bodyGeo, std({ roughness: 0.9 }), n);
     this.head = new THREE.InstancedMesh(headGeo, std({ roughness: 0.7 }), n);
     const skins = [0xf0c8a0, 0xd8a878, 0xb07850, 0x8a5a3a, 0xf4d4b8];

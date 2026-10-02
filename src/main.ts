@@ -494,6 +494,7 @@ async function main() {
       w.group.visible = show;
       if (!show) return;
       if (w.detail) w.detail.visible = d < (w.detailDistance ?? Infinity);
+      w.setDistance?.(d);
       w.update?.(t);
       wonderAnchors[i].update(cam);
     });
