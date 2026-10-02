@@ -338,7 +338,7 @@ export class Planet {
           slope,
           dy,
           terrain.biome(dx, dy, dz),
-          terrain.speck(dx, dy, dz, maxFreq),
+          terrain.speckle(dx, dy, dz, maxFreq),
           this.color,
         );
         col[vi * 3] = this.color[0];
