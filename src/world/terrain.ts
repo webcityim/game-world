@@ -21,6 +21,57 @@ interface FlatZone {
   height: number;
 }
 
+/** 以某个地点为原点的切平面坐标系:u = 东(沿 heading 旋转),v = 北。 */
+interface Frame {
+  x: number;
+  y: number;
+  z: number;
+  e1: [number, number, number];
+  e2: [number, number, number];
+}
+
+function makeFrame(dir: { x: number; y: number; z: number }, heading: number): Frame {
+  const up: [number, number, number] = [dir.x, dir.y, dir.z];
+  const ref: [number, number, number] = Math.abs(up[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const cross = (a: number[], b: number[]): [number, number, number] => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+  let t1 = cross(ref, up);
+  let l = Math.hypot(...t1);
+  t1 = [t1[0] / l, t1[1] / l, t1[2] / l];
+  const t2 = cross(up, t1);
+  const c = Math.cos(heading);
+  const s = Math.sin(heading);
+  const e1: [number, number, number] = [t1[0] * c + t2[0] * s, t1[1] * c + t2[1] * s, t1[2] * c + t2[2] * s];
+  const e2: [number, number, number] = [-t1[0] * s + t2[0] * c, -t1[1] * s + t2[1] * c, -t1[2] * s + t2[2] * c];
+  return { x: dir.x, y: dir.y, z: dir.z, e1, e2 };
+}
+
+/** 环绕某地点的山系(盆地 + 群山),让城市抬头就能看到山。 */
+interface Massif {
+  f: Frame;
+  rIn: number;
+  rOut: number;
+  rEnd: number;
+  amp: number;
+  /** 山势偏向的方向(v 为正 = 偏北),>0 时北侧更高 */
+  tilt: number;
+}
+
+/** 手工设计的河:从北边的山里流出,蜿蜒向南,汇入一个湖。 */
+interface River {
+  f: Frame;
+  u0: number;
+  len: number;
+  w0: number;
+  amp: number;
+  lam: number;
+  p1: number;
+  p2: number;
+}
+
 export type RGB = [number, number, number];
 
 /**
@@ -30,6 +81,8 @@ export type RGB = [number, number, number];
 export class Terrain {
   private readonly n: Noise3;
   private readonly flats: FlatZone[] = [];
+  private readonly massifs: Massif[] = [];
+  private readonly rivers: River[] = [];
 
   constructor(seed: number = SEED) {
     this.n = createNoise3(seed);
@@ -37,6 +90,76 @@ export class Terrain {
 
   addFlatZone(dir: { x: number; y: number; z: number }, inner: number, outer: number, height: number) {
     this.flats.push({ x: dir.x, y: dir.y, z: dir.z, inner, outer, height });
+  }
+
+  /**
+   * 在 dir 周围 rIn 米以内保持原样(盆地),rIn~rOut 逐渐隆起成山,rEnd 外消失。
+   * amp 是山脉高度尺度(夸张前,米)。
+   */
+  addMassif(dir: { x: number; y: number; z: number }, heading: number, rIn: number, rOut: number, rEnd: number, amp: number, tilt = 0.5) {
+    this.massifs.push({ f: makeFrame(dir, heading), rIn, rOut, rEnd, amp, tilt });
+  }
+
+  /**
+   * 手工河流:中心线 u(v) = u0 + 蜿蜒,v 从 +len(山里)到 -len(湖)。
+   * u0 是河到地点的横向偏移(米),w0 是下游的河床半宽(米)。
+   */
+  addRiver(dir: { x: number; y: number; z: number }, heading: number, u0: number, len: number, w0: number, seed = 1) {
+    this.rivers.push({ f: makeFrame(dir, heading), u0, len, w0, amp: 650 + 120 * (seed % 3), lam: 5200 + 900 * (seed % 4), p1: seed * 1.7, p2: seed * 0.9 + 2 });
+  }
+
+  private massifTerm(x: number, y: number, z: number, maxFreq: number): number {
+    let add = 0;
+    for (const m of this.massifs) {
+      const dx = x - m.f.x;
+      const dy = y - m.f.y;
+      const dz = z - m.f.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) * PLANET_RADIUS;
+      if (d > m.rEnd) continue;
+      const w = smooth(m.rIn, m.rOut, d) * (1 - smooth(m.rOut * 1.5, m.rEnd, d));
+      if (w <= 0.001) continue;
+      const v = (dx * m.f.e2[0] + dy * m.f.e2[1] + dz * m.f.e2[2]) * PLANET_RADIUS;
+      const tilt = 1 + m.tilt * Math.max(-0.7, Math.min(1, v / Math.max(d, 1)));
+      // 山势包络:有高峰有垭口,不是一圈等高的墙
+      const env = smooth(-0.3, 0.2, this.fbm(x, y, z, 150, 3, maxFreq, 0.5, 301.3));
+      const rd = this.ridged(x, y, z, 700, 6, maxFreq, 0.5, 411.9);
+      add += w * tilt * (0.2 + 0.8 * env) * m.amp * (0.3 + 1.1 * rd);
+    }
+    return add;
+  }
+
+  private riverTerm(x: number, y: number, z: number, h: number): number {
+    for (const r of this.rivers) {
+      const dx = x - r.f.x;
+      const dy = y - r.f.y;
+      const dz = z - r.f.z;
+      const dd = Math.sqrt(dx * dx + dy * dy + dz * dz) * PLANET_RADIUS;
+      if (dd > r.len * 1.4 + 6000) continue;
+      const u = (dx * r.f.e1[0] + dy * r.f.e1[1] + dz * r.f.e1[2]) * PLANET_RADIUS;
+      const v = (dx * r.f.e2[0] + dy * r.f.e2[1] + dz * r.f.e2[2]) * PLANET_RADIUS;
+      const cu = (vv: number) => r.u0 + r.amp * Math.sin(vv / r.lam + r.p1) + 0.45 * r.amp * Math.sin(vv / (r.lam * 0.37) + r.p2);
+
+      // 河段
+      if (Math.abs(v) < r.len) {
+        const taper = 1 - smooth(r.len * 0.8, r.len, v > 0 ? v : 0); // 北端(源头)渐隐
+        const wv = r.w0 * (0.5 + 0.6 * (0.5 - v / (2 * r.len)));
+        const dist = Math.abs(u - cu(v));
+        const flood = (1 - smooth(wv * 0.9, wv * 4.5, dist)) * taper;
+        const bed = (1 - smooth(wv * 0.55, wv, dist)) * taper;
+        h = mix(h, Math.min(h, 16), flood * 0.92);
+        h = mix(h, -7, bed);
+      }
+      // 河口湖
+      const lv = -r.len * 0.86;
+      const lu = cu(lv);
+      const ld = Math.hypot(u - lu, v - lv);
+      const lr = r.len * 0.12;
+      if (ld < lr * 1.6) {
+        h = mix(h, Math.min(h, 16), 1 - smooth(lr * 0.8, lr * 1.6, ld));
+        h = mix(h, -30, 1 - smooth(lr * 0.55, lr, ld));
+      }
+    }
+    return h;
   }
 
   private fbm(
@@ -107,23 +230,57 @@ export class Terrain {
     const t = c - 0.02;
     let h = t < 0 ? t * 14000 : Math.pow(t, 0.85) * 2200;
     const land = smooth(0, 0.12, t);
+    const inland = smooth(0.04, 0.3, t);
 
-    // 山脉:脊状噪声,只出现在内陆并被另一层噪声遮罩成"山系"
-    const mMask =
-      smooth(0.08, 0.45, t) * smooth(-0.1, 0.35, this.fbm(x, y, z, 3.1, 3, maxFreq, 0.5, 41.7));
-    const ridge = this.ridged(x, y, z, 7, 8, maxFreq, 0.52, 73.1);
-    h += ridge * mMask * 8200;
+    // 山系:超大尺度的脊状噪声,出现在内陆并被另一层噪声遮罩
+    const mMask = inland * smooth(-0.1, 0.35, this.fbm(x, y, z, 3.1, 3, maxFreq, 0.5, 41.7));
+    h += this.ridged(x, y, z, 7, 8, maxFreq, 0.52, 73.1) * mMask * 6200;
+
+    // 区域性格:有的地区群山连绵,有的地区一马平川(原神那种"一个国家一种地貌")
+    const rug = smooth(-0.15, 0.2, this.fbm(x, y, z, 8, 3, maxFreq, 0.5, 211.3)) * inland;
+    if (rug > 0.001) {
+      // 高地山脉:波长约 100~150 km,峰顶突出
+      const hi = this.ridged(x, y, z, 42, 6, maxFreq, 0.5, 133.7);
+      const peak = smooth(0.3, 0.85, hi);
+      h += peak * 2600 * rug;
+      // 山体上的嶙峋碎岩
+      h += this.ridged(x, y, z, 170, 4, maxFreq, 0.5, 19.9) * 420 * rug * smooth(0.25, 0.7, hi);
+      // 台地 / 丹霞:把中高海拔压成一层层平台,形成悬崖
+      const mesa = rug * smooth(0.15, 0.55, this.fbm(x, y, z, 15, 3, maxFreq, 0.5, 88.4));
+      if (mesa > 0.001 && h > 120) {
+        const step = 260;
+        const q = h / step;
+        const fl = Math.floor(q);
+        const terraced = (fl + smooth(0.62, 0.78, q - fl)) * step;
+        h = mix(h, terraced, 0.85 * mesa * smooth(120, 400, h));
+      }
+    }
 
     // 丘陵
     h += this.fbm(x, y, z, 30, 4, maxFreq, 0.5, 5.9) * 350 * land;
 
-    // 河流:低频噪声的零值等值线形成连续的河网,在低地雕刻河谷
+    // 地点周围的设计山系
+    if (this.massifs.length) h += this.massifTerm(x, y, z, maxFreq);
+
     if (land > 0) {
-      const r = Math.abs(this.fbm(x, y, z, 6, 4, maxFreq, 0.5, 97.3));
-      const riverMask = 1 - smooth(0, 0.018, r);
-      const lowland = 1 - smooth(60, 500, h);
-      const k = riverMask * lowland * land;
-      h += (-6 - h) * k;
+      const lowland = 1 - smooth(150, 800, h);
+
+      // 河网:噪声零值等值线 = 河道。宽度被另一层噪声调制,有宽有窄
+      // 大河 ~ 1~2 km 宽, 支流 ~ 300~600 m 宽;只在低地雕刻,山区则是干谷
+      const wv = 0.6 + 0.8 * (0.5 + 0.5 * this.fbm(x, y, z, 4, 2, maxFreq, 0.5, 61.1));
+      const rMain = Math.abs(this.fbm(x, y, z, 6, 4, maxFreq, 0.5, 97.3));
+      const rSide = Math.abs(this.fbm(x, y, z, 22, 3, maxFreq, 0.5, 143.9));
+      const wMain = 0.00055 * wv;
+      const wSide = 0.0009 * wv;
+      const flood = Math.max(1 - smooth(0, wMain * 4, rMain), 0.75 * (1 - smooth(0, wSide * 4, rSide)));
+      const bed = Math.max(1 - smooth(wMain * 0.3, wMain, rMain), 1 - smooth(wSide * 0.3, wSide, rSide));
+      // 河漫滩:河两侧一片平缓的绿地;河床:压到海平面以下
+      h = mix(h, 16, flood * lowland * land * 0.85);
+      h = mix(h, -7, bed * lowland * land);
+
+      // 湖泊
+      const lake = smooth(0.3, 0.4, this.fbm(x, y, z, 11, 3, maxFreq, 0.5, 177.7));
+      h = mix(h, -30, lake * (1 - smooth(200, 600, h)) * land);
     }
 
     h *= TERRAIN_EXAGGERATION;
@@ -138,6 +295,8 @@ export class Terrain {
         h = mix(h, f.height, w);
       }
     }
+    // 手工河流最后雕刻:即使穿过奇观 / 城市的平整地基,河道也不会被填平
+    if (this.rivers.length) h = this.riverTerm(x, y, z, h / TERRAIN_EXAGGERATION) * TERRAIN_EXAGGERATION;
     return h;
   }
 

@@ -18,6 +18,10 @@ body {
   touch-action: none;
 }
 
+#hud.hidden {
+  display: none;
+}
+
 #hud,
 #help {
   position: fixed;
@@ -182,7 +186,7 @@ body {
   position: fixed;
   top: 12px;
   right: 12px;
-  width: 210px;
+  width: 250px;
   max-height: calc(100vh - 24px);
   display: flex;
   flex-direction: column;
@@ -205,31 +209,63 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 9px 12px;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
   border: 0;
   background: transparent;
   font-weight: 600;
   letter-spacing: 0.5px;
+  text-align: left;
 }
 
+.menu-title kbd {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* 明显的折叠按钮:右上角的方块 */
 .menu-caret {
-  transition: transform 0.25s;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 16px;
+  line-height: 1;
+  flex: none;
 }
 
-#menu.collapsed .menu-caret {
-  transform: rotate(-90deg);
+.menu-head:hover .menu-caret {
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .menu-body {
   overflow-y: auto;
   padding: 0 8px 8px;
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: opacity 0.2s;
+  max-height: calc(100vh - 80px);
+  transition:
+    max-height 0.25s ease,
+    opacity 0.2s ease,
+    padding 0.25s ease;
+}
+
+#menu.collapsed {
+  width: auto;
 }
 
 #menu.collapsed .menu-body {
-  display: none;
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .menu-group h4 {
@@ -276,8 +312,24 @@ body {
   padding: 5px 6px;
 }
 
-@media (max-width: 640px) {
-  #hud {
-    display: none;
-  }
+/* 预设位置按钮两列排布 */
+.menu-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 6px;
+}
+
+.menu-group h4 {
+  grid-column: 1 / -1;
+}
+
+.menu-group .menu-row {
+  grid-column: 1 / -1;
+}
+
+.menu-item {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
 }

@@ -117,6 +117,7 @@ export class City {
   progress = 0;
 
   private readonly detail = new THREE.Group();
+  private readonly props = new THREE.Group();
   private readonly far: THREE.Points;
   private readonly farMat: THREE.PointsMaterial;
   private gen: Generator<number, void> | null = null;
@@ -336,8 +337,10 @@ export class City {
     const doors = this.doors.build();
     const chests = this.chests.build();
     const npcs = this.npcs.build(this.npcRng);
-    this.detail.add(trees, lamps, chests, npcs);
-    if (doors) this.detail.add(doors);
+    // 树 / 路灯 / 宝箱 / 行人 / 门属于"小物件层":离城区较远时整体隐藏,省掉大量绘制调用
+    this.props.add(trees, lamps, chests, npcs);
+    if (doors) this.props.add(doors);
+    this.detail.add(this.props);
     for (const o of [trees, lamps, chests, npcs]) o.traverse((c) => (c.castShadow = true));
     this.state = "ready";
     this.progress = 1;
@@ -861,6 +864,7 @@ export class City {
     }
 
     this.detail.visible = this.state === "ready" && dist < 45_000;
+    this.props.visible = dist < this.baseRadius + 1800;
     const farFade = Math.min(1, Math.max(0, (dist - 3000) / 6000));
     this.farMat.opacity = night * farFade;
     this.far.visible = this.farMat.opacity > 0.01;

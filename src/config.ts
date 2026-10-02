@@ -21,7 +21,7 @@ export const GRID = 32;
 /** 四叉树最大层级。层级 15 时块宽约 300m,顶点间距约 10m。 */
 export const MAX_LEVEL = 15;
 /** 距离 < 块宽 * SPLIT_FACTOR 时继续细分。 */
-export const SPLIT_FACTOR = 2.4;
+export const SPLIT_FACTOR = 2.0;
 /** 每帧用于生成地形块的 CPU 时间预算(毫秒)。 */
 export const BUILD_BUDGET_MS = 6;
 
