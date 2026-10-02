@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { attribute, color, mix, smoothstep, sin, time } from "three/tsl";
 import { BUILD_BUDGET_MS, GRID, MAX_LEVEL, PLANET_RADIUS, SPLIT_FACTOR } from "../config";
 import { Terrain, type RGB } from "./terrain";
+import { newZoneWeights } from "./terrain";
 import { Vegetation, VEG_MIN_LEVEL, type VegChunk } from "./vegetation";
 
 /**
@@ -91,6 +92,7 @@ export class Planet {
   private readonly color: RGB = [0, 0, 0];
 
   private readonly vegetation: Vegetation;
+  private readonly zoneTmp = newZoneWeights();
 
   constructor(terrain: Terrain, vegDensity = 1) {
     this.terrain = terrain;
@@ -424,6 +426,7 @@ export class Planet {
           terrain.speckle(dx, dy, dz, maxFreq),
           this.color,
           terrain.forest(dx, dy, dz, h, slope, biome),
+          terrain.zoneWeights(dx, dy, dz, this.zoneTmp),
         );
         col[vi * 3] = this.color[0];
         col[vi * 3 + 1] = this.color[1];
