@@ -177,3 +177,107 @@ body {
   overflow: visible;
   pointer-events: none;
 }
+
+#menu {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 210px;
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: rgba(6, 10, 20, 0.7);
+  backdrop-filter: blur(8px);
+  font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  font-size: 13px;
+  z-index: 4;
+  overflow: hidden;
+}
+
+#menu button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.menu-caret {
+  transition: transform 0.25s;
+}
+
+#menu.collapsed .menu-caret {
+  transform: rotate(-90deg);
+}
+
+.menu-body {
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: opacity 0.2s;
+}
+
+#menu.collapsed .menu-body {
+  display: none;
+}
+
+.menu-group h4 {
+  margin: 8px 4px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.6;
+  letter-spacing: 1px;
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  margin: 2px 0;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  text-align: left;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.menu-item.active {
+  border-color: #f0c64a;
+  background: rgba(240, 198, 74, 0.16);
+}
+
+.menu-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.menu-item.small {
+  width: auto;
+  flex: 1 1 40%;
+  text-align: center;
+  padding: 5px 6px;
+}
+
+@media (max-width: 640px) {
+  #hud {
+    display: none;
+  }
+}

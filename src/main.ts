@@ -8,6 +8,7 @@ import { EYE_HEIGHT, PlayerControls, type PhysicsWorld } from "./controls/player
 import { createShopPlaza, SHOP_SIZE } from "./shops/shop";
 import { HTML_IN_CANVAS_NATIVE } from "./shops/htmlTexture";
 import { PAGE_CSS, PAGE_HEIGHT, PAGE_WIDTH } from "./shops/pages";
+import { createMenu } from "./ui/menu";
 import { closeOverlay, isOverlayOpen, openOverlay, setPrompt, toast } from "./ui/ui";
 import { Anchor, pickSites, type SiteSpec } from "./world/anchor";
 import { Planet } from "./world/planet";
@@ -30,6 +31,7 @@ interface Poi {
   pos: THREE.Vector3;
   look: THREE.Vector3;
   mode: "fly" | "walk";
+  group: "轨道" | "城市" | "奇观";
 }
 
 /** 在 up 处取一个任意的单位切向量。 */
@@ -287,9 +289,10 @@ async function main() {
       pos: c.toPlanet(v.pos, new THREE.Vector3()),
       look: c.toPlanet(v.look, new THREE.Vector3()),
       mode: kind === "street" ? "walk" : "fly",
+      group: "城市",
     });
   };
-  pois.push({ name: "轨道 / Orbit", pos: capDir.clone().multiplyScalar(R * 2.6), look: new THREE.Vector3(), mode: "fly" });
+  pois.push({ name: "轨道 / Orbit", pos: capDir.clone().multiplyScalar(R * 2.6), look: new THREE.Vector3(), mode: "fly", group: "轨道" });
   addCityPoi(capital, "aerial");
   addCityPoi(capital, "street");
   for (const c of cities.slice(1)) addCityPoi(c, "aerial");
@@ -301,18 +304,37 @@ async function main() {
       look: a.pos.clone().addScaledVector(a.up, w.view.height * 0.7),
       pos: a.pos.clone().addScaledVector(a.up, w.view.height).addScaledVector(t, w.view.back),
       mode: "fly",
+      group: "奇观",
     });
   });
 
   let poiIndex = 0;
-  const goto = (i: number) => {
+  let menu: ReturnType<typeof createMenu> | null = null;
+  /** smooth = true 时沿弧线平滑飞过去;初始进入和 ?poi= 用瞬移 */
+  const goto = (i: number, smooth = true) => {
     poiIndex = ((i % pois.length) + pois.length) % pois.length;
     const p = pois[poiIndex];
-    controls.teleport(p.pos, p.look, p.mode);
-    toast(`传送:${p.name}`, 1800);
+    if (smooth) {
+      if (isOverlayOpen()) closeOverlay();
+      controls.flyTo(p.pos, p.look, p.mode);
+      toast(`飞往:${p.name}`, 1800);
+    } else controls.teleport(p.pos, p.look, p.mode);
+    menu?.setActive(p.name);
   };
+  const cycleTime = () => {
+    timeOffset += Math.PI / 4;
+    toast("时间快进 3 小时", 1200);
+  };
+  menu = createMenu(
+    pois.map((p, i) => ({ label: p.name, group: p.group, onClick: () => goto(i) })),
+    [
+      { label: "飞行 / 步行", onClick: () => controls.setMode(controls.mode === "fly" ? "walk" : "fly") },
+      { label: "快进 3 小时", onClick: cycleTime },
+      { label: "说明 H", onClick: () => help.classList.toggle("hidden") },
+    ],
+  );
   const startPoi = Number(params.get("poi") ?? "2") - 1;
-  goto(Number.isFinite(startPoi) ? startPoi : 1);
+  goto(Number.isFinite(startPoi) ? startPoi : 1, false);
 
   // ------------------------------------------------------------ 主循环
   window.addEventListener("resize", () => {
@@ -349,10 +371,8 @@ async function main() {
       else if (code === "KeyF" || code === "Enter") interact = true;
       else if (code === "KeyG") toggleMode = true;
       else if (code === "KeyH") help.classList.toggle("hidden");
-      else if (code === "KeyT") {
-        timeOffset += Math.PI / 4;
-        toast("时间快进 3 小时", 1200);
-      } else if (code === "Escape" && isOverlayOpen()) closeOverlay();
+      else if (code === "KeyT") cycleTime();
+      else if (code === "Escape" && isOverlayOpen()) closeOverlay();
     }
 
     if (isOverlayOpen()) {
@@ -369,7 +389,14 @@ async function main() {
         controls.setMode(controls.mode === "fly" ? "walk" : "fly");
         toast(controls.mode === "walk" ? "步行模式:左摇杆移动,B 跳跃" : "飞行模式", 1600);
       }
-      controls.update(dt, input, pad);
+      if (controls.flying) {
+        // 任意摇杆 / 移动键 / 拖动视角 = 打断飞行,交还控制
+        const ax = pad.axes;
+        const stick = Math.max(Math.abs(ax.leftX), Math.abs(ax.leftY), Math.abs(ax.rightX), Math.abs(ax.rightY));
+        const keys = ["KeyW", "KeyA", "KeyS", "KeyD", "Space", "KeyC"].some((k) => input.keys.has(k));
+        if (stick > 0.6 || keys) controls.cancelFlight();
+      }
+      if (!controls.stepFlight(dt)) controls.update(dt, input, pad);
     }
     controls.applyTo(camera);
     const cam = controls.pos;
