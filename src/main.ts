@@ -12,7 +12,7 @@ import { bindPanel, createMenu } from "./ui/menu";
 import { closeOverlay, isOverlayOpen, openOverlay, setPrompt, toast } from "./ui/ui";
 import { Anchor, pickSites, type SiteSpec } from "./world/anchor";
 import { Planet } from "./world/planet";
-import { Terrain } from "./world/terrain";
+import { Terrain, type ZoneKind } from "./world/terrain";
 import {
   createCrystalSpire,
   createDragonSpine,
@@ -40,7 +40,7 @@ interface Poi {
   pos: THREE.Vector3;
   look: THREE.Vector3;
   mode: "fly" | "walk";
-  group: "轨道" | "城市" | "奇观";
+  group: "轨道" | "城市" | "奇观" | "地貌";
 }
 
 /** 在 up 处取一个任意的单位切向量。 */
@@ -149,6 +149,35 @@ async function main() {
   terrain.addRiver(capDir, 0.35, 3900, 30000, 300, 1);
   // 青瓦镇(第二座城)也放进山里
   if (sites[8]) terrain.addMassif(sites[8], -0.6, 5000, 14000, 50000, 1000, 0.3);
+
+  // 地貌分区:沙漠 / 草原 / 峡谷 / 断崖 / 湖泊。在首都周围 10~30 km 内各放一块,方便飞过去看;
+  // 远方的金沙城、麦浪村也各有自己的地貌
+  const t1c = tangentAt(capDir);
+  const t2c = new THREE.Vector3().crossVectors(capDir, t1c).normalize();
+  const around = (base: THREE.Vector3, ang: number, dist: number) =>
+    base.clone().addScaledVector(t1c, (Math.cos(ang) * dist) / R).addScaledVector(t2c, (Math.sin(ang) * dist) / R).normalize();
+  interface Region {
+    name: string;
+    kind: ZoneKind;
+    dir: THREE.Vector3;
+    radius: number;
+  }
+  const regions: Region[] = [
+    { name: "翡翠湖", kind: "lake", dir: around(capDir, 2.4, 10500), radius: 1700 },
+    { name: "风语草原", kind: "grass", dir: around(capDir, -2.2, 18000), radius: 10000 },
+    { name: "赤岩峡谷", kind: "canyon", dir: around(capDir, 3.6, 27000), radius: 12000 },
+    { name: "天阶断崖", kind: "cliff", dir: around(capDir, 1.3, 22000), radius: 11000 },
+    { name: "流金沙海", kind: "desert", dir: around(capDir, -0.7, 33000), radius: 14000 },
+  ];
+  if (cityDirs[2]) {
+    regions.push({ name: "金沙城 · 沙海", kind: "desert", dir: cityDirs[2], radius: 22000 });
+    const t = tangentAt(cityDirs[2]);
+    regions.push({ name: "金沙绿洲", kind: "lake", dir: cityDirs[2].clone().addScaledVector(t, 4800 / R).normalize(), radius: 650 });
+  }
+  if (cityDirs[4]) regions.push({ name: "麦浪草甸", kind: "grass", dir: cityDirs[4], radius: 12000 });
+  regions.forEach((rg, i) => terrain.addZone(rg.dir, rg.radius, rg.kind, i + 1));
+  // 穿过草原的一条河
+  terrain.addRiver(regions[1].dir, 0.8, 0, 12000, 220, 2);
 
   // 先读出所有地点的原始海拔,再统一压平(压平会改变 height())
   const groundOf = (d: THREE.Vector3) => Math.max(8, terrain.height(d.x, d.y, d.z, 1e6));
@@ -343,6 +372,19 @@ async function main() {
       group: "奇观",
     });
   });
+  // 地貌书签:悬在分区上空斜着往下看
+  const zoneHeight: Record<ZoneKind, number> = { desert: 1100, grass: 1300, canyon: 1500, cliff: 1700, lake: 1500 };
+  const zoneBack: Record<ZoneKind, number> = { desert: 3200, grass: 3500, canyon: 3500, cliff: 3800, lake: 2600 };
+  for (const rg of regions) {
+    if (rg.name === "金沙绿洲") continue;
+    const up = rg.dir;
+    const t = tangentAt(up);
+    const g = R + Math.max(0, planet.heightAt(up));
+    const pos = up.clone().multiplyScalar(g + zoneHeight[rg.kind]).addScaledVector(t, -zoneBack[rg.kind]);
+    const floor = R + Math.max(0, planet.heightAt(pos.clone().normalize())) + 120;
+    if (pos.length() < floor) pos.setLength(floor);
+    pois.push({ name: rg.name, pos, look: up.clone().multiplyScalar(g + 60), mode: "fly", group: "地貌" });
+  }
 
   let poiIndex = 0;
   // 信息面板 / 说明:都可以折叠(菜单里的按钮或 I / H 键),状态会记住;窄屏默认收起

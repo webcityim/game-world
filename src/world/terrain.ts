@@ -74,6 +74,28 @@ interface River {
 
 export type RGB = [number, number, number];
 
+/** 设计地貌分区:沙漠 / 草原 / 峡谷 / 断崖 / 湖泊 */
+export type ZoneKind = "desert" | "grass" | "canyon" | "cliff" | "lake";
+const ZONE_INDEX: Record<ZoneKind, number> = { desert: 0, grass: 1, canyon: 2, cliff: 3, lake: 4 };
+interface Zone {
+  x: number;
+  y: number;
+  z: number;
+  r: number;
+  kind: number;
+  seed: number;
+}
+/** 各分区权重(0..1);lakeBowl = 湖盆,lake = 湖岸平原(包住湖盆) */
+export interface ZoneWeights {
+  desert: number;
+  grass: number;
+  canyon: number;
+  cliff: number;
+  lake: number;
+  lakeBowl: number;
+}
+export const newZoneWeights = (): ZoneWeights => ({ desert: 0, grass: 0, canyon: 0, cliff: 0, lake: 0, lakeBowl: 0 });
+
 /**
  * 行星地形:输入单位球面方向,输出海拔(米,海平面 = 0)。
  * 所有噪声坐标都在单位球上采样,频率 f 对应的波长约为 R / f 米。
@@ -83,6 +105,8 @@ export class Terrain {
   private readonly flats: FlatZone[] = [];
   private readonly massifs: Massif[] = [];
   private readonly rivers: River[] = [];
+  private readonly zones: Zone[] = [];
+  private readonly zw: ZoneWeights = newZoneWeights();
 
   constructor(seed: number = SEED) {
     this.n = createNoise3(seed);
@@ -106,6 +130,86 @@ export class Terrain {
    */
   addRiver(dir: { x: number; y: number; z: number }, heading: number, u0: number, len: number, w0: number, seed = 1) {
     this.rivers.push({ f: makeFrame(dir, heading), u0, len, w0, amp: 650 + 120 * (seed % 3), lam: 5200 + 900 * (seed % 4), p1: seed * 1.7, p2: seed * 0.9 + 2 });
+  }
+
+  /** 设计地貌分区:radius 米内整体换成该地貌(边界带噪声,不是正圆)。 */
+  addZone(dir: { x: number; y: number; z: number }, radius: number, kind: ZoneKind, seed = 1) {
+    this.zones.push({ x: dir.x, y: dir.y, z: dir.z, r: radius, kind: ZONE_INDEX[kind], seed: 900 + seed * 13.7 });
+  }
+
+  /** 某点的分区权重(多个分区取最大)。 */
+  zoneWeights(x: number, y: number, z: number, out: ZoneWeights = this.zw): ZoneWeights {
+    out.desert = out.grass = out.canyon = out.cliff = out.lake = out.lakeBowl = 0;
+    for (const zn of this.zones) {
+      const dx = x - zn.x;
+      const dy = y - zn.y;
+      const dz = z - zn.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz) * PLANET_RADIUS;
+      if (d > zn.r * 2.4) continue;
+      const wob = 1 + 0.32 * this.fbm(x, y, z, PLANET_RADIUS / (zn.r * 0.9), 2, 1e9, 0.5, zn.seed);
+      const u = d / (zn.r * wob);
+      if (zn.kind === 4) {
+        out.lake = Math.max(out.lake, 1 - smooth(0.9, 2.2, u));
+        out.lakeBowl = Math.max(out.lakeBowl, 1 - smooth(0.45, 0.95, u));
+      } else {
+        const w = 1 - smooth(0.55, 1.0, u);
+        if (zn.kind === 0) out.desert = Math.max(out.desert, w);
+        else if (zn.kind === 1) out.grass = Math.max(out.grass, w);
+        else if (zn.kind === 2) out.canyon = Math.max(out.canyon, w);
+        else out.cliff = Math.max(out.cliff, w);
+      }
+    }
+    return out;
+  }
+
+  /** 把分区地貌混进自然地形。h 为夸张前的海拔(米)。 */
+  private zoneTerrain(x: number, y: number, z: number, h: number, mf: number, w: ZoneWeights): number {
+    if (w.lake > 0.001) h = mix(h, 22, w.lake * 0.95);
+
+    if (w.grass > 0.001) {
+      // 缓坡丘陵草原:大起伏很柔和,没有嶙峋的山
+      const t = 52 + 60 * this.fbm(x, y, z, 420, 3, mf, 0.5, 701.1) + 16 * this.fbm(x, y, z, 3000, 2, mf, 0.5, 703.3);
+      h = mix(h, t, w.grass * 0.96);
+    }
+
+    if (w.desert > 0.001) {
+      // 沙丘:脊状噪声产生锋利的丘脊,大波浪 + 小波纹叠加,偶有平顶孤山
+      const swell = this.fbm(x, y, z, 650, 3, mf, 0.5, 711.1);
+      const dune = this.ridged(x, y, z, 2600, 3, mf, 0.5, 713.3);
+      const ripple = this.ridged(x, y, z, 14000, 2, mf, 0.5, 717.7);
+      const bn = this.fbm(x, y, z, 900, 2, mf, 0.5, 719.9);
+      const butte = smooth(0.27, 0.31, bn) * (95 + 20 * this.fbm(x, y, z, 6000, 2, mf, 0.5, 721.1));
+      const t = 34 + swell * 60 + dune * 30 + ripple * 3.2 + butte;
+      h = mix(h, t, w.desert * 0.96);
+    }
+
+    if (w.canyon > 0.001) {
+      // 高原 + 纵横交错的峡谷,谷壁一层层的台阶
+      const plat = 250 + 30 * this.fbm(x, y, z, 500, 3, mf, 0.5, 731.1);
+      const n1 = Math.abs(this.fbm(x, y, z, 1300, 3, mf, 0.5, 733.3));
+      const n2 = Math.abs(this.fbm(x, y, z, 3300, 2, mf, 0.5, 737.7));
+      const c1 = 1 - smooth(0.02, 0.075, n1);
+      const c2 = 1 - smooth(0.015, 0.055, n2);
+      const depth = Math.max(c1 * 215, c2 * 100 * smooth(0.0, 0.6, c1 + 0.5));
+      const step = 42;
+      const q = depth / step;
+      const fl = Math.floor(q);
+      const stepped = (fl + smooth(0.45, 0.72, q - fl)) * step;
+      h = mix(h, plat - stepped, w.canyon * 0.97);
+    }
+
+    if (w.cliff > 0.001) {
+      // 断崖:两道错落的陡崖线,把大地切成三级台阶
+      const base = 60 + 36 * this.fbm(x, y, z, 700, 3, mf, 0.5, 741.1);
+      const s1 = this.fbm(x, y, z, 230, 3, mf, 0.5, 743.3);
+      const s2 = this.fbm(x, y, z, 380, 3, mf, 0.5, 747.7);
+      const e = 0.0035;
+      const t = base + 165 * smooth(-e, e, s1) + 120 * smooth(-e * 1.3, e * 1.3, s2 + 0.05) + 14 * this.ridged(x, y, z, 3200, 3, mf, 0.5, 749.9);
+      h = mix(h, t, w.cliff * 0.97);
+    }
+
+    if (w.lakeBowl > 0.001) h = mix(h, -40, w.lakeBowl);
+    return h;
   }
 
   private massifTerm(x: number, y: number, z: number, maxFreq: number): number {
@@ -213,7 +317,12 @@ export class Terrain {
 
   /** 生物群系噪声,用于给地表上色(沙漠 / 草地)。 */
   biome(x: number, y: number, z: number): number {
-    return this.fbm(x, y, z, 2.2, 3, 1e9, 0.5, 301.5);
+    let b = this.fbm(x, y, z, 2.2, 3, 1e9, 0.5, 301.5);
+    if (this.zones.length) {
+      const w = this.zoneWeights(x, y, z);
+      b += 1.4 * w.desert + 0.5 * w.canyon - 0.6 * w.grass;
+    }
+    return b;
   }
 
   /**
@@ -225,6 +334,10 @@ export class Terrain {
     const region = smooth(-0.4, 0.05, this.fbm(x, y, z, 70, 3, 1e9, 0.5, 501.1));
     const clump = 0.5 + 0.5 * smooth(-0.35, 0.3, this.fbm(x, y, z, 1100, 3, 1e9, 0.5, 733.7));
     let d = region * clump;
+    if (this.zones.length) {
+      const w = this.zoneWeights(x, y, z);
+      d *= (1 - 0.8 * w.grass - 0.5 * w.cliff) * (1 - 0.97 * Math.max(w.desert, w.canyon * 0.8));
+    }
     // 河岸 / 低洼湿地:树更密
     d = Math.max(d, 0.75 * (1 - smooth(14, 90, hn)) * smooth(-0.3, 0.2, this.fbm(x, y, z, 300, 2, 1e9, 0.5, 91.3)));
     d *= 1 - smooth(2200, 3400, hn);
@@ -291,6 +404,13 @@ export class Terrain {
     // 地点周围的设计山系
     if (this.massifs.length) h += this.massifTerm(x, y, z, maxFreq);
 
+    let dry = 1;
+    if (this.zones.length) {
+      const w = this.zoneWeights(x, y, z);
+      h = this.zoneTerrain(x, y, z, h, maxFreq, w);
+      dry = 1 - 0.95 * Math.max(w.desert, w.canyon, w.cliff * 0.7);
+    }
+
     if (land > 0) {
       const lowland = 1 - smooth(150, 800, h);
 
@@ -304,12 +424,12 @@ export class Terrain {
       const flood = Math.max(1 - smooth(0, wMain * 4, rMain), 0.75 * (1 - smooth(0, wSide * 4, rSide)));
       const bed = Math.max(1 - smooth(wMain * 0.3, wMain, rMain), 1 - smooth(wSide * 0.3, wSide, rSide));
       // 河漫滩:河两侧一片平缓的绿地;河床:压到海平面以下
-      h = mix(h, 16, flood * lowland * land * 0.85);
-      h = mix(h, -7, bed * lowland * land);
+      h = mix(h, 16, flood * lowland * land * 0.85 * dry);
+      h = mix(h, -7, bed * lowland * land * dry);
 
       // 湖泊
       const lake = smooth(0.3, 0.4, this.fbm(x, y, z, 11, 3, maxFreq, 0.5, 177.7));
-      h = mix(h, -30, lake * (1 - smooth(200, 600, h)) * land);
+      h = mix(h, -30, lake * (1 - smooth(200, 600, h)) * land * dry);
     }
 
     h *= TERRAIN_EXAGGERATION;
@@ -337,7 +457,7 @@ export class Terrain {
    * @param biome 生物群系噪声
    * @param speck 斑驳噪声
    */
-  color(h: number, slope: number, ny: number, biome: number, speck: number, out: RGB, forest = 0): RGB {
+  color(h: number, slope: number, ny: number, biome: number, speck: number, out: RGB, forest = 0, zw?: ZoneWeights): RGB {
     const hn = h / TERRAIN_EXAGGERATION;
     let r: number;
     let g: number;
@@ -365,6 +485,41 @@ export class Terrain {
       r = mix(r, 0.14, forest * 0.55);
       g = mix(g, 0.3, forest * 0.5);
       b = mix(b, 0.1, forest * 0.5);
+
+      if (zw) {
+        // 草原:明亮的黄绿色
+        if (zw.grass > 0.01) {
+          const k = zw.grass * (1 - forest * 0.5);
+          r = mix(r, 0.45 + 0.08 * speck, k);
+          g = mix(g, 0.64 + 0.08 * speck, k);
+          b = mix(b, 0.2, k);
+        }
+        // 沙漠:金黄沙地,沙丘迎光 / 背光两面深浅不同
+        if (zw.desert > 0.01) {
+          const k = zw.desert;
+          const shade = 0.92 + 0.14 * speck + 0.25 * (0.5 - Math.min(0.5, slope * 3));
+          r = mix(r, 0.88 * shade, k);
+          g = mix(g, 0.7 * shade, k);
+          b = mix(b, 0.42 * shade, k);
+        }
+        // 峡谷:一层层红褐色岩带,高原顶面偏枯黄
+        if (zw.canyon > 0.01) {
+          const band = 0.5 + 0.5 * Math.sin(hn * 0.22 + speck * 4);
+          const fine = 0.5 + 0.5 * Math.sin(hn * 0.9 + speck * 9);
+          const k = zw.canyon;
+          r = mix(r, 0.62 + 0.24 * band - 0.05 * fine, k);
+          g = mix(g, 0.3 + 0.2 * band - 0.04 * fine, k);
+          b = mix(b, 0.17 + 0.13 * band, k);
+        }
+        // 断崖:岩层条带,顶部保留草色
+        if (zw.cliff > 0.01) {
+          const band = 0.5 + 0.5 * Math.sin(hn * 0.35 + speck * 3);
+          const rockk = zw.cliff * smooth(0.025, 0.1, slope);
+          r = mix(r, 0.48 + 0.14 * band, rockk);
+          g = mix(g, 0.4 + 0.1 * band, rockk);
+          b = mix(b, 0.32 + 0.06 * band, rockk);
+        }
+      }
 
       // 高海拔:草 -> 岩石
       const rock = smooth(1500, 3200, hn);
